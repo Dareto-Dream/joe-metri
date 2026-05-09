@@ -2,7 +2,7 @@
 
 Production-grade async ingestion for raw Geometry Dash level data. The scraper discovers levels, downloads raw server responses, validates level-data integrity, records metadata, writes JSONL datasets, and resumes automatically after interruption.
 
-It intentionally does not tokenize, classify gameplay, normalize coordinates, align audio, filter decoration, or perform ML preprocessing. Those are later pipeline stages.
+The scraper stage preserves raw data only. Tokenizer v1 is included as the first downstream stage for mechanics-token preprocessing and a tiny proof-of-life baseline model.
 
 ## Layout
 
@@ -15,9 +15,18 @@ data/
 
   processed/
     parsed_levels.jsonl
+    gameplay_objects.jsonl
 
   tokenized/
     mechanics_tokens.jsonl
+    vocab.json
+    tokenizer_stats.jsonl
+    tokenizer_analytics.json
+    reconstruction_validation.jsonl
+    reconstruction_summary.json
+
+models/
+  mechanics_v1/
 
   checkpoints/
     discovered_levels.jsonl
@@ -31,7 +40,7 @@ data/
     metrics.jsonl
 ```
 
-`processed/` and `tokenized/` are created only to reserve the later pipeline boundary. The scraper does not write parsed gameplay objects or tokens.
+The scraper writes only `raw/`, `checkpoints/`, and `logs/`. Tokenizer commands write `processed/`, `tokenized/`, and `models/mechanics_v1/`.
 
 ## Install
 
@@ -72,6 +81,30 @@ Optional raw comment pages for saved levels:
 ```powershell
 python -m gd_scraper --target-count 100 --include-comments --comments-pages 1
 ```
+
+## Tokenizer v1
+
+First-100 proof run:
+
+```powershell
+python -m gd_scraper.tokenizer --limit 100 --overwrite --inspect 10
+```
+
+Tiny mechanics baseline:
+
+```powershell
+python -m gd_scraper.train_mechanics --max-records 100 --epochs 8
+```
+
+Full local tokenization and validation:
+
+```powershell
+python -m gd_scraper.tokenizer --limit 0 --overwrite --inspect 10
+python -m gd_scraper.analytics
+python -m gd_scraper.reconstruction --overwrite
+```
+
+The tokenizer spec is in `docs/tokenizer_v1_instruction_doc.md`. The dataset-scale instruction doc is in `docs/mechanics_foundation_dataset_v1_instruction_doc.md`.
 
 ## Defaults
 

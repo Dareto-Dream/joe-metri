@@ -11,6 +11,10 @@ dependencies = [
 
 [project.scripts]
 gd-scrape = "gd_scraper.__main__:main"
+gd-tokenize = "gd_scraper.tokenizer:main"
+gd-train-mechanics = "gd_scraper.train_mechanics:main"
+gd-analyze-mechanics = "gd_scraper.analytics:main"
+gd-validate-reconstruction = "gd_scraper.reconstruction:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

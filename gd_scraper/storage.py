@@ -63,7 +63,13 @@ class CheckpointStore:
         self.comments_path = self.raw_dir / "comments.jsonl"
         self.songs_path = self.raw_dir / "songs.jsonl"
         self.parsed_levels_path = self.processed_dir / "parsed_levels.jsonl"
+        self.gameplay_objects_path = self.processed_dir / "gameplay_objects.jsonl"
         self.mechanics_tokens_path = self.tokenized_dir / "mechanics_tokens.jsonl"
+        self.vocab_path = self.tokenized_dir / "vocab.json"
+        self.tokenizer_stats_path = self.tokenized_dir / "tokenizer_stats.jsonl"
+        self.tokenizer_analytics_path = self.tokenized_dir / "tokenizer_analytics.json"
+        self.reconstruction_validation_path = self.tokenized_dir / "reconstruction_validation.jsonl"
+        self.reconstruction_summary_path = self.tokenized_dir / "reconstruction_summary.json"
         self.state_path = self.checkpoint_dir / "state.json"
         self.discovered_path = self.checkpoint_dir / "discovered_levels.jsonl"
         self.downloaded_ids_path = self.checkpoint_dir / "downloaded_level_ids.txt"
@@ -83,7 +89,10 @@ class CheckpointStore:
         self.comments_path.touch(exist_ok=True)
         self.songs_path.touch(exist_ok=True)
         self.parsed_levels_path.touch(exist_ok=True)
+        self.gameplay_objects_path.touch(exist_ok=True)
         self.mechanics_tokens_path.touch(exist_ok=True)
+        self.tokenizer_stats_path.touch(exist_ok=True)
+        self.reconstruction_validation_path.touch(exist_ok=True)
         self.discovered_path.touch(exist_ok=True)
         self.downloaded_ids_path.touch(exist_ok=True)
         self.rejected_levels_path.touch(exist_ok=True)

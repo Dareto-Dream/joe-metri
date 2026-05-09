@@ -9,8 +9,11 @@ venv/
 data/raw/*.jsonl
 data/processed/*.jsonl
 data/tokenized/*.jsonl
+data/tokenized/*.json
 data/checkpoints/*.json
 data/checkpoints/*.jsonl
 data/checkpoints/*.txt
 data/logs/*.log
 data/logs/*.jsonl
+models/*/*.json
+models/*/*.jsonl
