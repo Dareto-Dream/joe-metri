@@ -77,6 +77,19 @@ class TinyNgramModel:
         ]
         self.output_bias = [0.0 for _ in range(vocab_size)]
 
+    def expand_vocab(self, new_vocab_size: int, *, seed: int) -> None:
+        if new_vocab_size <= self.vocab_size:
+            return
+
+        rng = random.Random(seed + self.vocab_size)
+        added = new_vocab_size - self.vocab_size
+        for _ in range(added):
+            self.embeddings.append([rng.uniform(-0.05, 0.05) for _ in range(self.embedding_dim)])
+            self.output_bias.append(0.0)
+        for weights in self.output_weights:
+            weights.extend(rng.uniform(-0.05, 0.05) for _ in range(added))
+        self.vocab_size = new_vocab_size
+
     def context_vector(self, context: list[int]) -> list[float]:
         vector = [0.0 for _ in range(self.embedding_dim)]
         scale = 1.0 / max(len(context), 1)
@@ -139,6 +152,20 @@ class TinyNgramModel:
             "output_weights": self.output_weights,
             "output_bias": self.output_bias,
         }
+
+
+def model_from_json(value: dict[str, Any]) -> TinyNgramModel:
+    model = TinyNgramModel(
+        vocab_size=int(value["vocab_size"]),
+        context_size=int(value["context_size"]),
+        embedding_dim=int(value["embedding_dim"]),
+        seed=0,
+    )
+    model.embeddings = [[float(item) for item in row] for row in value["embeddings"]]
+    model.output_weights = [[float(item) for item in row] for row in value["output_weights"]]
+    model.output_bias = [float(item) for item in value["output_bias"]]
+    model.vocab_size = len(model.output_bias)
+    return model
 
 
 def softmax(logits: list[float]) -> list[float]:

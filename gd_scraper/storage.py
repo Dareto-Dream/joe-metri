@@ -73,11 +73,15 @@ class CheckpointStore:
         self.state_path = self.checkpoint_dir / "state.json"
         self.discovered_path = self.checkpoint_dir / "discovered_levels.jsonl"
         self.downloaded_ids_path = self.checkpoint_dir / "downloaded_level_ids.txt"
+        self.orchestrator_state_path = self.checkpoint_dir / "orchestrator_state.json"
+        self.orchestrator_raw_processed_ids_path = self.checkpoint_dir / "orchestrator_raw_processed_ids.txt"
         self.rejected_levels_path = self.checkpoint_dir / "rejected_levels.jsonl"
         self.legacy_rejected_ids_path = self.checkpoint_dir / "rejected_level_ids.txt"
         self.failures_path = self.checkpoint_dir / "failed_requests.jsonl"
         self.metrics_path = self.logs_dir / "metrics.jsonl"
         self.scraper_log_path = self.logs_dir / "scraper.log"
+        self.orchestrator_events_path = self.logs_dir / "orchestrator_events.jsonl"
+        self.orchestrator_metrics_path = self.logs_dir / "orchestrator_metrics.jsonl"
 
     def ensure(self) -> None:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
@@ -95,9 +99,12 @@ class CheckpointStore:
         self.reconstruction_validation_path.touch(exist_ok=True)
         self.discovered_path.touch(exist_ok=True)
         self.downloaded_ids_path.touch(exist_ok=True)
+        self.orchestrator_raw_processed_ids_path.touch(exist_ok=True)
         self.rejected_levels_path.touch(exist_ok=True)
         self.failures_path.touch(exist_ok=True)
         self.metrics_path.touch(exist_ok=True)
+        self.orchestrator_events_path.touch(exist_ok=True)
+        self.orchestrator_metrics_path.touch(exist_ok=True)
 
     def load_state(self) -> dict[str, Any]:
         if not self.state_path.exists():

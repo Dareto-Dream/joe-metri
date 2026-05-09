@@ -38,6 +38,9 @@ models/
   logs/
     scraper.log
     metrics.jsonl
+    orchestrator.log
+    orchestrator_events.jsonl
+    orchestrator_metrics.jsonl
 ```
 
 The scraper writes only `raw/`, `checkpoints/`, and `logs/`. Tokenizer commands write `processed/`, `tokenized/`, and `models/mechanics_v1/`.
@@ -95,6 +98,36 @@ Tiny mechanics baseline:
 ```powershell
 python -m gd_scraper.train_mechanics --max-records 100 --epochs 8
 ```
+
+## Unified continuous orchestrator
+
+Run scraping, tokenization, training, evaluation, and monitoring together:
+
+```powershell
+python -m gd_scraper.orchestrator --mode assisted
+```
+
+Autonomous mode applies health-based allocation changes automatically:
+
+```powershell
+python -m gd_scraper.orchestrator --mode autonomous
+```
+
+For a local queue-only pass without starting the network scraper:
+
+```powershell
+python -m gd_scraper.orchestrator --once --disable-trainer --disable-evaluator --min-gameplay-objects 1 --min-tokens 1
+```
+
+The orchestrator treats the JSONL artifacts as persistent queues:
+
+- raw queue: `data/raw/levels.jsonl`
+- token queue: `data/tokenized/mechanics_tokens.jsonl`
+- training queue: live examples sampled from recent tokenized records
+
+It records resumable state in `data/checkpoints/orchestrator_state.json` and processed raw IDs in `data/checkpoints/orchestrator_raw_processed_ids.txt`. Structured health and policy events are appended to `data/logs/orchestrator_events.jsonl`, including events such as `SCRAPER_STARTED`, `TOKENIZER_BACKLOG`, `TRAINING_PLATEAU`, `TOKEN_COLLAPSE_WARNING`, and `DATASET_DIVERSITY_LOW`. Dashboard-style metrics are appended to `data/logs/orchestrator_metrics.jsonl`.
+
+Vocabulary updates are append-only: new token IDs are added at the end of `data/tokenized/vocab.json` and existing IDs are never reordered, so older live checkpoints remain loadable.
 
 Full local tokenization and validation:
 

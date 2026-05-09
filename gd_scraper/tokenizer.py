@@ -456,6 +456,7 @@ def build_vocab(
     return {
         "dataset_version": DATASET_VERSION,
         "tokenizer_version": TOKENIZER_VERSION,
+        "vocab_version": 1,
         "vocab_size": len(tokens),
         "tokens": tokens,
         "token_to_id": token_to_id,

@@ -15,6 +15,7 @@ gd-tokenize = "gd_scraper.tokenizer:main"
 gd-train-mechanics = "gd_scraper.train_mechanics:main"
 gd-analyze-mechanics = "gd_scraper.analytics:main"
 gd-validate-reconstruction = "gd_scraper.reconstruction:main"
+gd-orchestrate-mechanics = "gd_scraper.orchestrator:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
