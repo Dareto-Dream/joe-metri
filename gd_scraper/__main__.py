@@ -72,6 +72,7 @@ class ShutdownSignalHandler:
             return
 
         self.logger.warning("received %s again; cancelling immediately", sig.name)
+        self.scraper.request_shutdown(sig.name, force=True)
         if self.main_task is not None:
             self.main_task.cancel()
 

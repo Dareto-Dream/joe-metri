@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from pathlib import Path
 from typing import Any
 
-from .errors import GDRequestError
+from .errors import GDRequestError, ShutdownRequested
 from .models import DATASET_VERSION, SCRAPER_VERSION, Candidate, RunStats, Song, epoch_seconds
 from .parser import (
     ParseError,
@@ -84,15 +85,27 @@ class GeometryDashScraper:
         self.metrics_writer: JsonlWriter | None = None
         self.last_metrics_at = 0.0
         self.shutdown_requested = False
+        self.force_shutdown_requested = False
         self.shutdown_reason: str | None = None
 
-    def request_shutdown(self, reason: str = "requested") -> None:
-        if self.shutdown_requested:
+        set_shutdown_event = getattr(self.client, "set_shutdown_event", None)
+        if callable(set_shutdown_event):
+            set_shutdown_event(self.stop_event)
+
+    def request_shutdown(self, reason: str = "requested", *, force: bool = False) -> None:
+        was_shutdown_requested = self.shutdown_requested
+        was_force_requested = self.force_shutdown_requested
+        if force:
+            self.force_shutdown_requested = True
+        if was_shutdown_requested and (not force or was_force_requested):
             return
         self.shutdown_requested = True
         self.shutdown_reason = reason
         self.stop_event.set()
-        LOGGER.warning("shutdown requested: %s", reason)
+        if force:
+            LOGGER.warning("forced shutdown requested: %s", reason)
+        else:
+            LOGGER.warning("shutdown requested: %s", reason)
 
     async def run(self) -> RunStats:
         self.store.ensure()
@@ -148,11 +161,22 @@ class GeometryDashScraper:
                     await self._discover_source(source, queue, discovered_writer, song_writer, failure_writer)
                 await queue.join()
                 await self._emit_metrics(force=True)
+            except asyncio.CancelledError:
+                self.request_shutdown("cancelled", force=True)
+                raise
             finally:
-                for _ in workers:
-                    await queue.put(None)
-                await asyncio.gather(*workers)
-                await self._emit_metrics(force=True)
+                try:
+                    if self.force_shutdown_requested:
+                        await self._cancel_workers(workers)
+                    else:
+                        await self._stop_workers(queue, workers)
+                except asyncio.CancelledError:
+                    self.request_shutdown("cancelled", force=True)
+                    await self._cancel_workers(workers)
+                    raise
+                finally:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await self._emit_metrics(force=True)
 
         return self.stats
 
@@ -208,6 +232,9 @@ class GeometryDashScraper:
             try:
                 raw = await self._timed_request(self.client.search_levels(params))
                 parsed = parse_search_response(raw)
+            except ShutdownRequested:
+                await self._emit_metrics()
+                return
             except GDRequestError as exc:
                 self.stats.failed += 1
                 await self._log_failure(
@@ -245,9 +272,15 @@ class GeometryDashScraper:
                 return
 
             for song in parsed.songs:
+                if self._should_stop():
+                    await self._emit_metrics()
+                    return
                 await self._write_song(song_writer, song, source=source.name)
 
             for raw_level in parsed.levels:
+                if self._should_stop():
+                    await self._emit_metrics()
+                    return
                 if is_auto_level(raw_level):
                     self.stats.auto_skipped += 1
                     self.stats.skipped += 1
@@ -276,11 +309,23 @@ class GeometryDashScraper:
                     self.next_sequence += 1
                     self.seen_candidate_ids.add(candidate.level_id)
 
+                if self._should_stop():
+                    await self._emit_metrics()
+                    return
                 await discovered_writer.write(candidate.to_json())
                 self.stats.discovered += 1
+                if self._should_stop():
+                    await self._emit_metrics()
+                    return
                 await queue.put(candidate)
 
+            if self._should_stop():
+                await self._emit_metrics()
+                return
             await self._mark_source(source.name, next_page=page + 1, done=False)
+            if self._should_stop():
+                await self._emit_metrics()
+                return
             await self._emit_metrics()
             LOGGER.info("source %s page %s discovered %s levels", source.name, page, len(parsed.levels))
 
@@ -336,6 +381,10 @@ class GeometryDashScraper:
             raw = await self._timed_request(self.client.download_level(candidate.level_id))
             download = parse_download_response(raw)
             validation = validate_level_data(download.level.get("4", ""))
+        except ShutdownRequested:
+            await self._release_save_slot()
+            await self._emit_metrics()
+            return
         except GDRequestError as exc:
             await self._release_save_slot()
             self.stats.failed += 1
@@ -521,12 +570,31 @@ class GeometryDashScraper:
 
     async def _timed_request(self, awaitable: Any) -> str:
         started = time.monotonic()
+        record_request = True
         try:
             return await awaitable
+        except ShutdownRequested:
+            record_request = False
+            raise
         finally:
-            elapsed = time.monotonic() - started
-            async with self.stats_lock:
-                self.stats.record_request(elapsed)
+            if record_request:
+                elapsed = time.monotonic() - started
+                async with self.stats_lock:
+                    self.stats.record_request(elapsed)
+
+    async def _stop_workers(
+        self,
+        queue: asyncio.Queue[Candidate | None],
+        workers: list[asyncio.Task[None]],
+    ) -> None:
+        for _ in workers:
+            await queue.put(None)
+        await asyncio.gather(*workers)
+
+    async def _cancel_workers(self, workers: list[asyncio.Task[None]]) -> None:
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
 
     async def _emit_metrics(self, *, force: bool = False) -> None:
         if self.metrics_writer is None:

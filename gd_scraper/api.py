@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
 from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
 
-from .errors import GDRequestError
+from .errors import GDRequestError, ShutdownRequested
 
 
 BASE_URL = "https://www.boomlings.com/database"
@@ -24,17 +25,45 @@ class AsyncRateLimiter:
         self._lock = asyncio.Lock()
         self._next_at = 0.0
 
-    async def wait(self) -> None:
+    async def wait(self, stop_event: asyncio.Event | None = None) -> None:
+        if stop_event is not None and stop_event.is_set():
+            raise ShutdownRequested("shutdown requested")
         if self.interval <= 0:
             return
 
         loop = asyncio.get_running_loop()
         async with self._lock:
+            if stop_event is not None and stop_event.is_set():
+                raise ShutdownRequested("shutdown requested")
             now = loop.time()
             if now < self._next_at:
-                await asyncio.sleep(self._next_at - now)
+                await self._sleep(self._next_at - now, stop_event)
                 now = loop.time()
             self._next_at = max(now, self._next_at) + self.interval
+
+    async def _sleep(self, delay: float, stop_event: asyncio.Event | None) -> None:
+        if stop_event is None:
+            await asyncio.sleep(delay)
+            return
+
+        sleep_task = asyncio.create_task(asyncio.sleep(delay))
+        stop_task = asyncio.create_task(stop_event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {sleep_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in pending:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            if stop_task in done and stop_event.is_set():
+                raise ShutdownRequested("shutdown requested")
+        finally:
+            for task in (sleep_task, stop_task):
+                if not task.done():
+                    task.cancel()
 
 
 @dataclass(frozen=True)
@@ -54,6 +83,10 @@ class GDClient:
         self.download_limiter = AsyncRateLimiter(config.download_rate_per_second)
         self.comment_limiter = AsyncRateLimiter(config.comment_rate_per_second)
         self._session: aiohttp.ClientSession | None = None
+        self._shutdown_event: asyncio.Event | None = None
+
+    def set_shutdown_event(self, shutdown_event: asyncio.Event) -> None:
+        self._shutdown_event = shutdown_event
 
     async def __aenter__(self) -> "GDClient":
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
@@ -115,7 +148,9 @@ class GDClient:
         last_error: GDRequestError | None = None
 
         for attempt in range(1, self.config.retries + 1):
-            await limiter.wait()
+            self._raise_if_shutdown_requested()
+            await limiter.wait(self._shutdown_event)
+            self._raise_if_shutdown_requested()
             try:
                 async with self._session.post(url, data=payload) as response:
                     text = await response.text()
@@ -143,7 +178,7 @@ class GDClient:
             if attempt < self.config.retries:
                 delay = self.config.backoff_seconds * (2 ** (attempt - 1))
                 delay += random.uniform(0, self.config.backoff_seconds)
-                await asyncio.sleep(delay)
+                await self._sleep(delay)
 
         if last_error is not None:
             raise last_error
@@ -152,3 +187,30 @@ class GDClient:
             endpoint=endpoint,
             payload=payload,
         )
+
+    async def _sleep(self, delay: float) -> None:
+        if self._shutdown_event is None:
+            await asyncio.sleep(delay)
+            return
+        sleep_task = asyncio.create_task(asyncio.sleep(delay))
+        stop_task = asyncio.create_task(self._shutdown_event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {sleep_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in pending:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            if stop_task in done and self._shutdown_event.is_set():
+                raise ShutdownRequested("shutdown requested")
+        finally:
+            for task in (sleep_task, stop_task):
+                if not task.done():
+                    task.cancel()
+
+    def _raise_if_shutdown_requested(self) -> None:
+        if self._shutdown_event is not None and self._shutdown_event.is_set():
+            raise ShutdownRequested("shutdown requested")

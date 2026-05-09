@@ -35,7 +35,12 @@ class JsonlWriter:
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         if self._file is not None:
-            await self._file.close()
+            close_task = asyncio.create_task(self._file.close())
+            try:
+                await asyncio.shield(close_task)
+            except asyncio.CancelledError:
+                await close_task
+                raise
 
     async def write(self, value: dict[str, Any]) -> None:
         if self._file is None:
@@ -96,9 +101,7 @@ class CheckpointStore:
     async def save_state(self, state: dict[str, Any]) -> None:
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         tmp_path = self.state_path.with_suffix(".json.tmp")
-        async with aiofiles.open(tmp_path, "wb") as handle:
-            await handle.write(dumps_pretty(state))
-            await handle.flush()
+        tmp_path.write_bytes(dumps_pretty(state))
         tmp_path.replace(self.state_path)
 
 

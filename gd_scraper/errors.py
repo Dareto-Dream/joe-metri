@@ -18,3 +18,7 @@ class GDRequestError(RuntimeError):
         self.payload = payload
         self.status = status
         self.response_text = response_text
+
+
+class ShutdownRequested(RuntimeError):
+    pass
