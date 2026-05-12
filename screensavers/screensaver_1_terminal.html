@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GD AI Orchestrator - Terminal Screen</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: #0b0d0f;
+    color: #e7f5ef;
+    font-family: Consolas, "DM Mono", "Courier New", monospace;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background:
+      linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.028) 1px, transparent 1px);
+    background-size: 34px 34px;
+    pointer-events: none;
+  }
+  .shell {
+    position: fixed;
+    inset: 24px;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    border: 1px solid rgba(111, 255, 199, 0.22);
+    background: rgba(8, 10, 12, 0.88);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.035);
+  }
+  header, footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 18px;
+    border-bottom: 1px solid rgba(111, 255, 199, 0.16);
+    color: #8adfbe;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  footer {
+    border-top: 1px solid rgba(111, 255, 199, 0.16);
+    border-bottom: 0;
+  }
+  .status {
+    color: #ffbe70;
+    white-space: nowrap;
+  }
+  .status[data-active="true"] { color: #6fffc7; }
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+    gap: 18px;
+    padding: 18px;
+    min-height: 0;
+  }
+  .panel {
+    border: 1px solid rgba(111, 255, 199, 0.16);
+    background: rgba(14, 18, 21, 0.82);
+    min-height: 0;
+  }
+  .panel h2 {
+    margin: 0;
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(111, 255, 199, 0.14);
+    color: #6fffc7;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px;
+    background: rgba(111, 255, 199, 0.1);
+  }
+  .metric {
+    min-width: 0;
+    padding: 16px 14px;
+    background: #0f1316;
+  }
+  .metric strong {
+    display: block;
+    color: #f4fbf8;
+    font-size: clamp(19px, 2.4vw, 34px);
+    line-height: 1.05;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .metric span {
+    display: block;
+    margin-top: 7px;
+    color: #7f9d92;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 190px;
+  }
+  .bars {
+    display: grid;
+    gap: 14px;
+    padding: 16px;
+  }
+  .bar-label {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    color: #9fcfbf;
+    font-size: 12px;
+  }
+  .track {
+    height: 7px;
+    background: #151b1f;
+    border: 1px solid rgba(111, 255, 199, 0.13);
+    overflow: hidden;
+  }
+  .fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #6fffc7, #ffbe70);
+    transition: width 500ms ease;
+  }
+  .log {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    padding: 14px;
+    color: #a7cabc;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  .log-row {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .warn {
+    color: #ffbe70;
+  }
+  @media (max-width: 900px) {
+    .shell { inset: 10px; }
+    main { grid-template-columns: 1fr; overflow: auto; }
+    .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div>Geometry Dash AI Pipeline Orchestrator</div>
+    <div id="clock">--:--:--</div>
+    <div class="status" id="status" data-active="false">Waiting</div>
+  </header>
+  <main>
+    <section class="panel">
+      <h2>Live Pipeline</h2>
+      <div class="grid">
+        <div class="metric"><strong id="levels-scraped">0</strong><span>Levels scraped</span></div>
+        <div class="metric"><strong id="levels-tokenized">0</strong><span>Levels tokenized</span></div>
+        <div class="metric"><strong id="tokens-generated">0</strong><span>Tokens generated</span></div>
+        <div class="metric"><strong id="trainer-steps">0</strong><span>Trainer steps</span></div>
+        <div class="metric"><strong id="train-loss">-</strong><span>Train loss</span></div>
+        <div class="metric"><strong id="val-loss">-</strong><span>Validation loss</span></div>
+        <div class="metric"><strong id="entropy">-</strong><span>Token entropy</span></div>
+        <div class="metric"><strong id="grammar">-</strong><span>Grammar valid</span></div>
+      </div>
+      <canvas id="chart"></canvas>
+      <div class="bars">
+        <div>
+          <div class="bar-label"><span>Raw queue</span><span id="raw-q">0</span></div>
+          <div class="track"><div class="fill" id="raw-fill"></div></div>
+        </div>
+        <div>
+          <div class="bar-label"><span>Token queue</span><span id="token-q">0</span></div>
+          <div class="track"><div class="fill" id="token-fill"></div></div>
+        </div>
+        <div>
+          <div class="bar-label"><span>Generation diversity</span><span id="diversity">-</span></div>
+          <div class="track"><div class="fill" id="diversity-fill"></div></div>
+        </div>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Events</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </main>
+  <footer>
+    <div id="mode">mode unknown</div>
+    <div id="message">Use Ctrl+C in the orchestrator terminal for graceful shutdown.</div>
+    <div id="uptime">uptime 0:00:00</div>
+  </footer>
+</div>
+<script src="orchestrator_common.js"></script>
+<script>
+const S = window.GDSaver;
+const chart = document.getElementById("chart");
+const ctx = chart.getContext("2d");
+const history = [];
+let current = S.fallback();
+
+function text(id, value) {
+  document.getElementById(id).textContent = value;
+}
+
+function pctFill(id, value) {
+  document.getElementById(id).style.width = `${S.clamp(value, 0, 100)}%`;
+}
+
+function drawChart() {
+  const width = Math.max(chart.clientWidth, 10);
+  const height = 190;
+  chart.width = width;
+  chart.height = height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.strokeStyle = "rgba(111,255,199,0.12)";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 5; i += 1) {
+    const y = (height * i) / 5;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
+  if (history.length < 2) return;
+  const vals = history.flatMap(p => [p.train, p.val]).filter(Number.isFinite);
+  const min = Math.min(...vals, 0);
+  const max = Math.max(...vals, 1);
+  const range = Math.max(max - min, 0.1);
+  function x(i) { return (i / Math.max(history.length - 1, 1)) * (width - 12) + 6; }
+  function y(v) { return height - 14 - ((v - min) / range) * (height - 28); }
+  function line(key, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    history.forEach((p, i) => {
+      const py = y(p[key]);
+      if (i === 0) ctx.moveTo(x(i), py);
+      else ctx.lineTo(x(i), py);
+    });
+    ctx.stroke();
+  }
+  line("val", "rgba(255,190,112,0.65)");
+  line("train", "#6fffc7");
+}
+
+function render(payload) {
+  current = payload;
+  const now = new Date();
+  text("clock", `${S.pad(now.getHours())}:${S.pad(now.getMinutes())}:${S.pad(now.getSeconds())}`);
+  const status = document.getElementById("status");
+  status.dataset.active = String(payload.active);
+  status.textContent = payload.active ? "Running" : "Idle";
+  text("mode", `mode ${payload.mode}`);
+  text("message", payload.shutdownMessage);
+  text("uptime", `uptime ${S.formatDuration(payload.uptimeSeconds)}`);
+  text("levels-scraped", S.formatInt(payload.dashboard.levelsScraped));
+  text("levels-tokenized", S.formatInt(payload.dashboard.levelsTokenized));
+  text("tokens-generated", S.formatRate(payload.dashboard.tokensGenerated));
+  text("trainer-steps", S.formatInt(payload.trainer.steps));
+  text("train-loss", S.formatFloat(payload.trainer.trainLoss, 4));
+  text("val-loss", S.formatFloat(payload.trainer.valLoss, 4));
+  text("entropy", S.formatFloat(payload.tokenizer.entropy, 3));
+  text("grammar", S.formatPct(payload.tokenizer.grammarValidity * 100, 0));
+  text("raw-q", S.formatInt(payload.dashboard.rawQueue));
+  text("token-q", S.formatInt(payload.dashboard.tokenQueue));
+  text("diversity", S.formatPct(payload.trainer.diversity * 100, 0));
+  const queueMax = Math.max(payload.dashboard.rawQueue, payload.dashboard.tokenQueue, 1);
+  pctFill("raw-fill", payload.dashboard.rawQueue / queueMax * 100);
+  pctFill("token-fill", payload.dashboard.tokenQueue / queueMax * 100);
+  pctFill("diversity-fill", payload.trainer.diversity * 100);
+  history.push({ train: payload.trainer.trainLoss || 0, val: payload.trainer.valLoss || 0 });
+  if (history.length > 80) history.shift();
+  drawChart();
+  const rows = payload.events.slice(-14).reverse().map(event => {
+    const name = String(event.event || "EVENT");
+    const ts = event.timestamp ? new Date(Number(event.timestamp) * 1000).toTimeString().slice(0, 8) : "--:--:--";
+    return `<div class="log-row">${ts} &gt; ${name}</div>`;
+  });
+  document.getElementById("log").innerHTML = rows.join("") || '<div class="log-row warn">waiting for orchestrator metrics</div>';
+}
+
+S.pollTelemetry(render);
+setInterval(() => render(current), 1000);
+window.addEventListener("resize", drawChart);
+render(current);
+</script>
+</body>
+</html>

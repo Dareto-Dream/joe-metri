@@ -9,6 +9,7 @@ import logging
 import math
 from pathlib import Path
 import random
+import signal
 import time
 from typing import Any, Iterable
 
@@ -111,6 +112,58 @@ class OrchestratorConfig:
     collapse_pause_seconds: float = 120.0
     plateau_patience: int = 3
     policy_cooldown_seconds: float = 300.0
+    shutdown_timeout_seconds: float = 30.0
+
+
+class OrchestratorSignalHandler:
+    def __init__(self, orchestrator: "ContinuousPipelineOrchestrator") -> None:
+        self.orchestrator = orchestrator
+        self.logger = logging.getLogger(__name__)
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.main_task: asyncio.Task[Any] | None = None
+        self.exit_code = 0
+        self._signals = [signal.SIGINT]
+        if hasattr(signal, "SIGTERM"):
+            self._signals.append(signal.SIGTERM)
+        self._previous_handlers: dict[signal.Signals, Any] = {}
+        self._loop_handlers: set[signal.Signals] = set()
+        self._requests = 0
+
+    def __enter__(self) -> "OrchestratorSignalHandler":
+        self.loop = asyncio.get_running_loop()
+        self.main_task = asyncio.current_task()
+        for sig in self._signals:
+            self._previous_handlers[sig] = signal.getsignal(sig)
+            try:
+                self.loop.add_signal_handler(sig, self._handle_signal, sig)
+                self._loop_handlers.add(sig)
+            except (NotImplementedError, RuntimeError, ValueError):
+                signal.signal(sig, self._sync_handle_signal)
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        for sig in self._signals:
+            if sig in self._loop_handlers and self.loop is not None:
+                self.loop.remove_signal_handler(sig)
+            previous = self._previous_handlers.get(sig)
+            if previous is not None:
+                signal.signal(sig, previous)
+
+    def _sync_handle_signal(self, signum: int, _frame: object | None) -> None:
+        self._handle_signal(signal.Signals(signum))
+
+    def _handle_signal(self, sig: signal.Signals) -> None:
+        self._requests += 1
+        self.exit_code = 128 + sig.value
+        if self._requests == 1:
+            self.logger.warning("received %s; stopping orchestrator gracefully", sig.name)
+            self.orchestrator.request_shutdown(sig.name)
+            return
+
+        self.logger.warning("received %s again; forcing orchestrator shutdown", sig.name)
+        self.orchestrator.request_shutdown(sig.name, force=True)
+        if self.main_task is not None:
+            self.main_task.cancel()
 
 
 def read_json_file(path: Path, default: Any) -> Any:
@@ -329,6 +382,8 @@ class ContinuousPipelineOrchestrator:
         self.allocation.scraper_concurrency = 8
         self.stop_event = asyncio.Event()
         self.started_at = time.monotonic()
+        self.started_epoch = time.time()
+        self.force_shutdown_requested = False
         self.state: dict[str, Any] = {}
         self.processed_raw_ids: set[int] = set()
         self.model: TinyNgramModel | None = None
@@ -365,12 +420,17 @@ class ContinuousPipelineOrchestrator:
             tasks.append(asyncio.create_task(self._evaluation_loop(), name="evaluation-loop"))
         tasks.append(asyncio.create_task(self._monitor_loop(), name="monitor-loop"))
 
+        cancelled = False
         try:
             await self.stop_event.wait()
+        except asyncio.CancelledError:
+            cancelled = True
+            self.request_shutdown("cancelled", force=True)
+            raise
         finally:
-            await self._shutdown_tasks(tasks)
+            await self._shutdown_tasks(tasks, force=cancelled or self.force_shutdown_requested)
             await self._save_state()
-            await self._event("ORCHESTRATOR_STOPPED")
+            await self._event("ORCHESTRATOR_STOPPED", forced=self.force_shutdown_requested)
 
     async def run_once(self) -> dict[str, Any]:
         self._initialize()
@@ -382,10 +442,12 @@ class ContinuousPipelineOrchestrator:
             await self.evaluation_cycle(force=True)
         return await self.monitor_cycle()
 
-    def request_shutdown(self, reason: str = "requested") -> None:
+    def request_shutdown(self, reason: str = "requested", *, force: bool = False) -> None:
         LOGGER.warning("orchestrator shutdown requested: %s", reason)
+        if force:
+            self.force_shutdown_requested = True
         if self.active_scraper is not None:
-            self.active_scraper.request_shutdown(reason)
+            self.active_scraper.request_shutdown(reason, force=force)
         self.stop_event.set()
 
     def _initialize(self) -> None:
@@ -406,12 +468,37 @@ class ContinuousPipelineOrchestrator:
         await asyncio.sleep(self.config.max_runtime_seconds)
         self.request_shutdown("max_runtime_seconds")
 
-    async def _shutdown_tasks(self, tasks: list[asyncio.Task[None]]) -> None:
+    async def _shutdown_tasks(self, tasks: list[asyncio.Task[None]], *, force: bool) -> None:
         if self.active_scraper is not None:
-            self.active_scraper.request_shutdown("orchestrator_stopping")
-        for task in tasks:
+            self.active_scraper.request_shutdown("orchestrator_stopping", force=force)
+        if not force:
+            pending = [task for task in tasks if not task.done()]
+            if pending:
+                done, still_pending = await asyncio.wait(
+                    pending,
+                    timeout=max(self.config.shutdown_timeout_seconds, 0.0),
+                )
+                for task in done:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                if not still_pending:
+                    return
+                await self._event(
+                    "ORCHESTRATOR_FORCE_SHUTDOWN",
+                    pending_tasks=[task.get_name() for task in still_pending],
+                )
+                if self.active_scraper is not None:
+                    self.active_scraper.request_shutdown("orchestrator_shutdown_timeout", force=True)
+                pending = list(still_pending)
+            else:
+                return
+        else:
+            pending = [task for task in tasks if not task.done()]
+
+        self.force_shutdown_requested = True
+        for task in pending:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*pending, return_exceptions=True)
 
     async def _scraper_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -846,6 +933,8 @@ class ContinuousPipelineOrchestrator:
         return {
             "dataset_version": DATASET_VERSION,
             "timestamp": epoch_seconds(),
+            "started_at": int(self.started_epoch),
+            "uptime_seconds": round(time.time() - self.started_epoch, 6),
             "mode": self.config.mode,
             "dashboard": {
                 "levels_scraped": levels_scraped,
@@ -1131,6 +1220,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-sample-tokens", type=int, default=40)
     parser.add_argument("--temperature", type=float, default=0.9)
     parser.add_argument("--checkpoint-interval-steps", type=int, default=10_000)
+    parser.add_argument("--shutdown-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO")
     parser.add_argument("--once", action="store_true", help="Process currently queued local data once without starting scraper.")
     return parser
@@ -1178,6 +1268,7 @@ def config_from_args(args: argparse.Namespace) -> OrchestratorConfig:
         min_sample_tokens=args.min_sample_tokens,
         temperature=args.temperature,
         checkpoint_interval_steps=args.checkpoint_interval_steps,
+        shutdown_timeout_seconds=args.shutdown_timeout_seconds,
     )
 
 
@@ -1194,14 +1285,21 @@ async def async_main(args: argparse.Namespace) -> int:
         force=True,
     )
     orchestrator = ContinuousPipelineOrchestrator(config_from_args(args))
-    try:
-        if args.once:
-            await orchestrator.run_once()
-        else:
-            await orchestrator.run()
-    except KeyboardInterrupt:
-        orchestrator.request_shutdown("keyboard_interrupt")
-        return 130
+    with OrchestratorSignalHandler(orchestrator) as shutdown:
+        try:
+            if args.once:
+                await orchestrator.run_once()
+            else:
+                await orchestrator.run()
+        except KeyboardInterrupt:
+            orchestrator.request_shutdown("keyboard_interrupt")
+            return 130
+        except asyncio.CancelledError:
+            if shutdown.exit_code:
+                return shutdown.exit_code
+            raise
+        if shutdown.exit_code:
+            return shutdown.exit_code
     return 0
 
 

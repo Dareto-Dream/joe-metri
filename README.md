@@ -129,6 +129,14 @@ It records resumable state in `data/checkpoints/orchestrator_state.json` and pro
 
 Vocabulary updates are append-only: new token IDs are added at the end of `data/tokenized/vocab.json` and existing IDs are never reordered, so older live checkpoints remain loadable.
 
+Screensaver telemetry for the running orchestrator:
+
+```powershell
+python -m screensavers.main
+```
+
+Open `http://127.0.0.1:5000/screensaver_1_terminal.html` or `http://127.0.0.1:5000/screensaver_2_minimal.html`. The screensavers read `data/logs/orchestrator_metrics.jsonl`, `data/logs/orchestrator_events.jsonl`, and live model artifacts; they do not spoof a separate trainer.
+
 Full local tokenization and validation:
 
 ```powershell
