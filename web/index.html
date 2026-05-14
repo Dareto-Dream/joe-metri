@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GD AI Runtime</title>
+    <link rel="stylesheet" href="/web/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="control-panel">
+        <div class="brand-row">
+          <div>
+            <p class="eyebrow">Geometry Dash AI Runtime v1</p>
+            <h1>Mechanics Generator</h1>
+          </div>
+          <span id="status" class="status">Ready</span>
+        </div>
+
+        <form id="generate-form" class="controls">
+          <label class="file-picker">
+            <input id="audio" name="audio" type="file" accept=".mp3,.wav,.ogg,audio/*" required />
+            <span id="file-label">Song Upload</span>
+          </label>
+
+          <div class="field-row">
+            <label>
+              <span>Difficulty</span>
+              <select name="difficulty" id="difficulty">
+                <option>Easy</option>
+                <option>Medium</option>
+                <option selected>Hard</option>
+                <option>Insane</option>
+                <option>Extreme</option>
+              </select>
+            </label>
+
+            <label>
+              <span>Seed</span>
+              <input id="seed" name="seed" type="number" value="7" min="1" max="999999" />
+            </label>
+          </div>
+
+          <div class="alignment-grid" aria-label="Alignment">
+            <label><input type="checkbox" name="alignment" value="Flow" checked /><span>Flow</span></label>
+            <label><input type="checkbox" name="alignment" value="Dense" /><span>Dense</span></label>
+            <label><input type="checkbox" name="alignment" value="Jump-heavy" /><span>Jump</span></label>
+            <label><input type="checkbox" name="alignment" value="Technical" /><span>Technical</span></label>
+            <label><input type="checkbox" name="alignment" value="Sync-heavy" /><span>Sync</span></label>
+            <label><input type="checkbox" name="alignment" value="Wave-heavy" /><span>Wave</span></label>
+            <label><input type="checkbox" name="alignment" value="Ship-focused" /><span>Ship</span></label>
+          </div>
+
+          <div class="slider-row">
+            <label>
+              <span>Temperature</span>
+              <input id="temperature" name="temperature" type="range" min="0.2" max="1.8" value="0.9" step="0.05" />
+            </label>
+            <output id="temperature-value">0.90</output>
+          </div>
+
+          <div class="field-row">
+            <label>
+              <span>Top K</span>
+              <input id="top-k" name="top_k" type="number" value="40" min="1" max="80" />
+            </label>
+            <label>
+              <span>Max Tokens</span>
+              <input id="max-tokens" name="max_tokens" type="number" value="360" min="90" max="900" />
+            </label>
+          </div>
+
+          <button id="generate-button" type="submit">Generate</button>
+        </form>
+      </section>
+
+      <section class="preview-panel">
+        <div class="toolbar">
+          <div class="metric-strip" id="metrics"></div>
+          <div class="export-row">
+            <button id="export-json" type="button" disabled>JSON</button>
+            <button id="export-objects" type="button" disabled>Objects</button>
+            <button id="export-level" type="button" disabled>Level</button>
+            <button id="export-k4" type="button" disabled>k4</button>
+          </div>
+        </div>
+
+        <div class="canvas-wrap">
+          <canvas id="preview" width="1280" height="540"></canvas>
+        </div>
+
+        <div class="details-grid">
+          <section>
+            <h2>Tokens</h2>
+            <pre id="tokens"></pre>
+          </section>
+          <section>
+            <div class="save-row">
+              <h2>Save Injection</h2>
+              <label class="save-picker">
+                <input id="save-file" type="file" accept=".dat" />
+                <span id="save-label">CCGameManager.dat</span>
+              </label>
+              <input id="target-level-key" type="text" placeholder="target key" />
+              <button id="inject-save" type="button" disabled>Inject</button>
+            </div>
+            <pre id="objects"></pre>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <script src="/web/app.js"></script>
+  </body>
+</html>

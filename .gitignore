@@ -15,5 +15,7 @@ data/checkpoints/*.jsonl
 data/checkpoints/*.txt
 data/logs/*.log
 data/logs/*.jsonl
+data/runtime/
+exports/
 models/*/*.json
 models/*/*.jsonl

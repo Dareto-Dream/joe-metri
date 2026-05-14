@@ -1,0 +1,223 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from pathlib import Path
+import time
+from typing import Any
+
+from gd_scraper.storage import dumps_pretty
+
+from .generator import GenerationResult
+from .reconstructor import RuntimeLayout
+from .save_codec import (
+    SaveInjectionResult,
+    decode_level_string_k4,
+    encode_level_string_k4,
+    inject_level_string_into_local_save,
+    inject_level_string_into_save,
+)
+
+
+class ExportError(ValueError):
+    def __init__(self, reason: str, detail: str = "") -> None:
+        super().__init__(detail or reason)
+        self.reason = reason
+        self.detail = detail or reason
+
+
+@dataclass(frozen=True)
+class ExportMetrics:
+    objects_generated: int
+    step_count: int
+    serialization_warnings: list[str]
+    invalid_tokens_skipped: int
+    export_time_seconds: float
+    detected_codec: str = ""
+
+    def to_json(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "objects_generated": self.objects_generated,
+            "STEP_count": self.step_count,
+            "serialization_warnings": self.serialization_warnings,
+            "invalid_tokens_skipped": self.invalid_tokens_skipped,
+            "export_time": round(self.export_time_seconds, 4),
+        }
+        if self.detected_codec:
+            payload["detected_codec"] = self.detected_codec
+        return payload
+
+
+def export_generation_json(result: GenerationResult) -> dict[str, Any]:
+    return result.to_json()
+
+
+def export_object_strings(result: GenerationResult) -> str:
+    return "\n".join(result.layout.gd_object_strings)
+
+
+def export_level_string(result: GenerationResult) -> str:
+    return result.layout.level_string
+
+
+def export_k4(result: GenerationResult) -> str:
+    validate_generation_export(result)
+    return encode_level_string_k4(result.layout.level_string)
+
+
+def validate_generation_export(result: GenerationResult) -> None:
+    validate_layout_export(result.tokens, result.layout)
+
+
+def validate_layout_export(tokens: list[str], layout: RuntimeLayout) -> None:
+    if not layout.objects:
+        raise ExportError("no_gameplay_objects")
+    malformed = [value for value in layout.gd_object_strings if not is_valid_gd_object_string(value)]
+    if malformed:
+        raise ExportError("malformed_object_string", malformed[0])
+    k4_value = encode_level_string_k4(layout.level_string)
+    if not k4_value:
+        raise ExportError("k4_rebuild_failed")
+    if decode_level_string_k4(k4_value) != layout.level_string:
+        raise ExportError("k4_roundtrip_failed")
+
+
+def is_valid_gd_object_string(value: str) -> bool:
+    parts = value.split(",")
+    if len(parts) < 6 or len(parts) % 2 != 0:
+        return False
+    pairs = {parts[index]: parts[index + 1] for index in range(0, len(parts) - 1, 2)}
+    for key in ("1", "2", "3"):
+        if key not in pairs:
+            return False
+        try:
+            int(float(pairs[key]))
+        except ValueError:
+            return False
+    return int(float(pairs["1"])) > 0
+
+
+def write_generation_exports(result: GenerationResult, export_dir: Path) -> ExportMetrics:
+    started = time.perf_counter()
+    validate_generation_export(result)
+    metrics = build_export_metrics(
+        result.tokens,
+        result.layout,
+        invalid_tokens_skipped=result.validation.invalid_token_count,
+        started=started,
+        serialization_warnings=export_warnings(result.validation, result.layout),
+    )
+    write_export_artifacts(export_generation_json(result), result.layout, metrics, export_dir)
+    return metrics
+
+
+def write_layout_exports(
+    tokens: list[str],
+    validation: object,
+    layout: RuntimeLayout,
+    export_dir: Path,
+) -> ExportMetrics:
+    started = time.perf_counter()
+    validate_layout_export(tokens, layout)
+    invalid_tokens_skipped = int(getattr(validation, "invalid_token_count", 0))
+    metrics = build_export_metrics(
+        tokens,
+        layout,
+        invalid_tokens_skipped=invalid_tokens_skipped,
+        started=started,
+        serialization_warnings=export_warnings(validation, layout),
+    )
+    validation_json = validation.to_json() if hasattr(validation, "to_json") else validation
+    payload = {
+        "tokens": tokens,
+        "validation": validation_json,
+        "preview": layout.to_json(),
+        "metrics": metrics.to_json(),
+    }
+    write_export_artifacts(payload, layout, metrics, export_dir)
+    return metrics
+
+
+def build_export_metrics(
+    tokens: list[str],
+    layout: RuntimeLayout,
+    *,
+    invalid_tokens_skipped: int,
+    started: float,
+    serialization_warnings: list[str] | None = None,
+    detected_codec: str = "",
+) -> ExportMetrics:
+    return ExportMetrics(
+        objects_generated=len(layout.gd_object_strings),
+        step_count=tokens.count("STEP"),
+        serialization_warnings=serialization_warnings or [],
+        invalid_tokens_skipped=invalid_tokens_skipped,
+        export_time_seconds=time.perf_counter() - started,
+        detected_codec=detected_codec,
+    )
+
+
+def write_export_artifacts(
+    payload: dict[str, Any],
+    layout: RuntimeLayout,
+    metrics: ExportMetrics,
+    export_dir: Path,
+) -> None:
+    export_dir.mkdir(parents=True, exist_ok=True)
+    (export_dir / "generated_level.json").write_bytes(dumps_pretty(payload))
+    (export_dir / "level_string.txt").write_text(layout.level_string, encoding="utf-8", newline="\n")
+    (export_dir / "export_metrics.json").write_bytes(dumps_pretty(metrics.to_json()))
+
+
+def write_export_metrics(export_dir: Path, metrics: ExportMetrics) -> None:
+    export_dir.mkdir(parents=True, exist_ok=True)
+    (export_dir / "export_metrics.json").write_bytes(dumps_pretty(metrics.to_json()))
+
+
+def export_warnings(validation: object, layout: RuntimeLayout) -> list[str]:
+    warnings: list[str] = []
+    for warning in [*list(getattr(validation, "errors", []) or []), *layout.errors]:
+        if warning not in warnings:
+            warnings.append(str(warning))
+    return warnings
+
+
+def inject_generation_into_save(
+    result: GenerationResult,
+    save_path: Path,
+    export_dir: Path,
+    *,
+    target_level_key: str | None = None,
+    target_level_name: str | None = None,
+) -> tuple[SaveInjectionResult, ExportMetrics]:
+    metrics = write_generation_exports(result, export_dir)
+    injection = inject_level_string_into_save(
+        save_path,
+        result.layout.level_string,
+        export_dir,
+        target_level_key=target_level_key,
+        target_level_name=target_level_name,
+    )
+    metrics = replace(metrics, detected_codec=injection.detected_codec)
+    write_export_metrics(export_dir, metrics)
+    return injection, metrics
+
+
+def inject_generation_into_local_save(
+    result: GenerationResult,
+    save_path: Path,
+    export_dir: Path,
+    *,
+    target_level_name: str | None = None,
+    target_slot: int | None = None,
+) -> tuple[SaveInjectionResult, ExportMetrics]:
+    metrics = write_generation_exports(result, export_dir)
+    injection = inject_level_string_into_local_save(
+        save_path,
+        result.layout.level_string,
+        export_dir,
+        target_level_name=target_level_name,
+        target_slot=target_slot,
+    )
+    metrics = replace(metrics, detected_codec=injection.detected_codec)
+    write_export_metrics(export_dir, metrics)
+    return injection, metrics
