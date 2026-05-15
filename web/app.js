@@ -106,6 +106,8 @@ function renderGeneration(payload) {
     `${metrics.object_count} objects`,
     `${metrics.portal_count} portals`,
     `${metrics.orb_count} orbs`,
+    `${Math.round(metrics.sync_score || 0)} sync`,
+    `${Math.round(metrics.flow_score || 0)} flow`,
     `${metrics.tokens_per_second}/s`
   ].forEach((text) => {
     const item = document.createElement("span");

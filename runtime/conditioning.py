@@ -27,7 +27,7 @@ DIFFICULTY_DENSITY = {
 @dataclass(frozen=True)
 class GenerationControls:
     difficulty: str = "Hard"
-    alignments: tuple[str, ...] = ("Flow",)
+    alignments: tuple[str, ...] = ("Flow", "Sync-heavy")
     temperature: float = 0.9
     top_k: int = 40
     max_tokens: int = 360

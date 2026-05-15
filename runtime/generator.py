@@ -30,6 +30,9 @@ class GenerationMetrics:
     object_count: int
     planning_iterations: int
     planning_score: float
+    sync_score: float
+    flow_score: float
+    synced_objects: int
 
     def to_json(self) -> dict[str, float | int]:
         return {
@@ -43,6 +46,9 @@ class GenerationMetrics:
             "object_count": self.object_count,
             "planning_iterations": self.planning_iterations,
             "planning_score": round(self.planning_score, 6),
+            "sync_score": round(self.sync_score, 6),
+            "flow_score": round(self.flow_score, 6),
+            "synced_objects": self.synced_objects,
         }
 
 
@@ -164,6 +170,9 @@ def build_metrics(
         object_count=len(layout.objects),
         planning_iterations=len(plan.candidates) if plan is not None else 1,
         planning_score=plan.best.quality.score if plan is not None else 0.0,
+        sync_score=plan.best.flow_sync.sync_score if plan is not None else 0.0,
+        flow_score=plan.best.flow_sync.flow_score if plan is not None else 0.0,
+        synced_objects=plan.best.flow_sync.synced_objects if plan is not None else 0,
     )
 
 

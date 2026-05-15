@@ -33,6 +33,7 @@ from runtime.exporter import (
     write_generation_exports,
 )
 from runtime.generator import GenerationResult, MechanicsRuntime
+from runtime.flow import arrange_flow_synced_tokens
 from runtime.planner import plan_tokens
 from runtime.reconstructor import reconstruct_layout
 from runtime.save_codec import SaveCodecError, inject_level_string_into_local_save, inject_level_string_into_save
@@ -84,7 +85,7 @@ async def generate_level(
     audio: UploadFile | None = File(default=None),
     upload_id: str | None = Form(default=None),
     difficulty: str = Form(default="Hard"),
-    alignments: str = Form(default="Flow"),
+    alignments: str = Form(default="Flow,Sync-heavy"),
     temperature: float = Form(default=0.9),
     top_k: int = Form(default=40),
     max_tokens: int = Form(default=360),
@@ -113,7 +114,7 @@ async def generate_level_stream(
     audio: UploadFile | None = File(default=None),
     upload_id: str | None = Form(default=None),
     difficulty: str = Form(default="Hard"),
-    alignments: str = Form(default="Flow"),
+    alignments: str = Form(default="Flow,Sync-heavy"),
     temperature: float = Form(default=0.9),
     top_k: int = Form(default=40),
     max_tokens: int = Form(default=360),
@@ -276,7 +277,7 @@ def _generation_or_404(generation_id: str) -> GenerationResult:
 
 def _parse_alignments(value: str) -> tuple[str, ...]:
     alignments = tuple(item.strip() for item in value.split(",") if item.strip())
-    return alignments or ("Flow",)
+    return alignments or ("Flow", "Sync-heavy")
 
 
 def _generation_controls(
@@ -327,7 +328,7 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--official-song-id", type=int, default=0)
     parser.add_argument("--custom-song-id", type=int, default=0)
     parser.add_argument("--difficulty", default="Hard")
-    parser.add_argument("--alignments", default="Flow")
+    parser.add_argument("--alignments", default="Flow,Sync-heavy")
     parser.add_argument("--temperature", type=float, default=0.9)
     parser.add_argument("--top-k", type=int, default=40)
     parser.add_argument("--max-tokens", type=int, default=360)
@@ -370,18 +371,21 @@ def run_cli(args: argparse.Namespace) -> int:
         token_count = len(result.tokens)
     else:
         tokens = load_cli_tokens(args.tokens_file)
+        controls = GenerationControls(
+            difficulty=args.difficulty,
+            alignments=_parse_alignments(args.alignments),
+            temperature=max(0.2, min(1.8, float(args.temperature))),
+            top_k=max(1, min(80, int(args.top_k))),
+            max_tokens=max(90, min(900, int(args.max_tokens))),
+            seed=int(args.seed),
+            planning_iterations=max(1, min(16, int(args.planning_iterations))),
+        )
         if tokens is None:
-            controls = GenerationControls(
-                difficulty=args.difficulty,
-                alignments=_parse_alignments(args.alignments),
-                temperature=max(0.2, min(1.8, float(args.temperature))),
-                top_k=max(1, min(80, int(args.top_k))),
-                max_tokens=max(90, min(900, int(args.max_tokens))),
-                seed=int(args.seed),
-                planning_iterations=max(1, min(16, int(args.planning_iterations))),
-            )
             tokens = generate_cli_tokens(controls)
             print(f"sample token file not found; generated tokens from {runtime.model_path}")
+        else:
+            conditioning = build_conditioning(default_cli_audio_analysis(), controls)
+            tokens, _flow_sync = arrange_flow_synced_tokens(tokens, conditioning, seed=controls.seed)
         validation = validate_generation(tokens, known_tokens=runtime.known_tokens)
         layout = reconstruct_layout(tokens)
         metrics = write_layout_exports(tokens, validation, layout, export_dir, metadata=metadata)

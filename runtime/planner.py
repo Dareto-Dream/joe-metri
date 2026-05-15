@@ -7,6 +7,7 @@ from gd_scraper.quality import TokenQualityReport, evaluate_token_sequence_quali
 from gd_scraper.train_mechanics import TinyNgramModel
 
 from .conditioning import ConditioningProfile
+from .flow import FlowSyncReport, arrange_flow_synced_tokens
 from .sampler import sample_tokens
 
 
@@ -19,6 +20,7 @@ class GenerationCandidate:
     seed: int
     tokens: list[str]
     quality: TokenQualityReport
+    flow_sync: FlowSyncReport
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -26,6 +28,7 @@ class GenerationCandidate:
             "seed": self.seed,
             "token_count": len(self.tokens),
             "quality": self.quality.to_json(),
+            "flow_sync": self.flow_sync.to_json(),
         }
 
 
@@ -62,7 +65,7 @@ def plan_tokens(
         if event_callback is not None:
             event_callback({"type": "candidate_start", "candidate": index, "seed": candidate_seed})
 
-        tokens = sample_tokens(
+        sampled_tokens = sample_tokens(
             model,
             token_to_id=token_to_id,
             id_to_token=id_to_token,
@@ -70,10 +73,17 @@ def plan_tokens(
             seed=candidate_seed,
             temperature=temperature,
             top_k=top_k,
-            token_callback=_candidate_token_callback(index, event_callback),
         )
+        tokens, flow_sync = arrange_flow_synced_tokens(sampled_tokens, conditioning, seed=candidate_seed)
+        _emit_candidate_tokens(index, tokens, event_callback)
         quality = evaluate_token_sequence_quality(tokens)
-        candidate = GenerationCandidate(index=index, seed=candidate_seed, tokens=tokens, quality=quality)
+        candidate = GenerationCandidate(
+            index=index,
+            seed=candidate_seed,
+            tokens=tokens,
+            quality=quality,
+            flow_sync=flow_sync,
+        )
         candidates.append(candidate)
 
         if event_callback is not None:
@@ -83,13 +93,30 @@ def plan_tokens(
                     "candidate": index,
                     "seed": candidate_seed,
                     "quality": quality.to_json(),
+                    "flow_sync": flow_sync.to_json(),
                     "token_count": len(tokens),
+                    "sampled_token_count": len(sampled_tokens),
                 }
             )
 
-    best = max(candidates, key=lambda candidate: (candidate.quality.score, candidate.quality.valid, -candidate.index))
+    best = max(
+        candidates,
+        key=lambda candidate: (
+            candidate.quality.valid,
+            candidate.quality.score + candidate.flow_sync.score * 0.55,
+            candidate.flow_sync.sync_score,
+            -candidate.index,
+        ),
+    )
     if event_callback is not None:
-        event_callback({"type": "selected", "candidate": best.index, "quality": best.quality.to_json()})
+        event_callback(
+            {
+                "type": "selected",
+                "candidate": best.index,
+                "quality": best.quality.to_json(),
+                "flow_sync": best.flow_sync.to_json(),
+            }
+        )
     return GenerationPlan(best=best, candidates=candidates)
 
 
@@ -111,3 +138,17 @@ def _candidate_token_callback(
         )
 
     return emit
+
+
+def _emit_candidate_tokens(
+    candidate_index: int,
+    tokens: list[str],
+    event_callback: PlanningEventCallback | None,
+) -> None:
+    callback = _candidate_token_callback(candidate_index, event_callback)
+    if callback is None:
+        return
+    emitted: list[str] = []
+    for token in tokens:
+        emitted.append(token)
+        callback(token, emitted[:])

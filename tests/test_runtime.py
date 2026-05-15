@@ -13,6 +13,7 @@ import math
 from runtime.audio import analyze_audio
 from runtime.conditioning import GenerationControls, build_conditioning
 from runtime.exporter import GmdMetadata, is_valid_gd_object_string, validate_layout_export, write_layout_exports
+from runtime.flow import arrange_flow_synced_tokens, score_flow_sync
 from runtime.generator import MechanicsRuntime
 from gd_scraper.quality import evaluate_token_sequence_quality
 from runtime.reconstructor import reconstruct_layout
@@ -102,7 +103,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertGreater(len(result.layout.gd_object_strings), 0)
         self.assertGreater(result.metrics.tokens_per_second, 0)
         self.assertGreaterEqual(result.metrics.planning_iterations, 1)
+        self.assertGreaterEqual(result.metrics.sync_score, 70)
+        self.assertGreaterEqual(result.metrics.flow_score, 70)
         self.assertIn("candidates", result.to_json()["planning"])
+        first_candidate = result.to_json()["planning"]["candidates"][0]
+        self.assertIn("flow_sync", first_candidate)
 
     def test_runtime_planning_streams_candidate_events(self) -> None:
         events: list[dict[str, object]] = []
@@ -125,6 +130,49 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(result.plan.candidates), 2)
         self.assertTrue(any(event.get("type") == "token" for event in events))
         self.assertTrue(any(event.get("type") == "selected" for event in events))
+
+    def test_flow_arranger_turns_collapsed_sample_into_synced_playable_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pulse.wav"
+            write_pulse_wav(path)
+            analysis = analyze_audio(path)
+        conditioning = build_conditioning(
+            analysis,
+            GenerationControls(
+                difficulty="Hard",
+                alignments=("Flow", "Sync-heavy"),
+                max_tokens=120,
+                seed=11,
+            ),
+        )
+        collapsed = [
+            "START",
+            "DIFF_HARD",
+            "ALIGN_UNKNOWN",
+            *(["SPIKE", "Y15"] * 12),
+            "BLOCK",
+            "Y0",
+            "WIDTH_16",
+            "BLOCK",
+            "Y1",
+            "WIDTH_16",
+            "STEP",
+            "END",
+        ]
+
+        arranged, report = arrange_flow_synced_tokens(collapsed, conditioning, seed=11)
+        validation = validate_generation(arranged)
+        quality = evaluate_token_sequence_quality(arranged)
+        layout = reconstruct_layout(arranged)
+        rescored = score_flow_sync(arranged, conditioning)
+
+        self.assertTrue(validation.valid, validation.errors)
+        self.assertGreater(len(layout.objects), 5)
+        self.assertEqual(quality.path_obstructions, 0)
+        self.assertLessEqual(quality.max_objects_per_step, 2)
+        self.assertGreaterEqual(report.sync_score, 70)
+        self.assertGreaterEqual(report.flow_score, 80)
+        self.assertEqual(report.sync_score, rescored.sync_score)
 
     def test_quality_penalizes_player_path_obstructions(self) -> None:
         open_path = [
