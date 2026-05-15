@@ -19,6 +19,7 @@ import orjson
 from .api import GDClient, GDClientConfig
 from .gd_objects import BASE_VOCAB_TOKENS, TOKENIZER_VERSION
 from .models import DATASET_VERSION, epoch_seconds
+from .quality import evaluate_token_sequence_quality
 from .reconstruction import validate_token_grammar
 from .scraper import GeometryDashScraper
 from .sources import DEFAULT_SOURCES, resolve_sources
@@ -81,6 +82,7 @@ class OrchestratorConfig:
     download_rate: float = 0.33
     comment_rate: float = 0.33
     include_comments: bool = False
+    download_audio: bool = False
     comments_pages: int = 0
     tokenizer_poll_seconds: float = 2.0
     metrics_interval_seconds: float = 10.0
@@ -109,6 +111,9 @@ class OrchestratorConfig:
     min_token_entropy: float = 2.0
     collapse_diversity_threshold: float = 0.18
     collapse_max_repetition: int = 16
+    min_sample_quality_score: float = 80.0
+    max_sample_path_obstructions: int = 0
+    max_sample_control_spam: int = 2
     collapse_pause_seconds: float = 120.0
     plateau_patience: int = 3
     policy_cooldown_seconds: float = 300.0
@@ -526,6 +531,7 @@ class ContinuousPipelineOrchestrator:
                         target_count=self.config.scraper_target_count,
                         concurrency=max(self.allocation.scraper_concurrency, 1),
                         include_comments=self.config.include_comments,
+                        download_audio=self.config.download_audio,
                         comments_pages=self.config.comments_pages,
                     )
                     self.active_scraper = scraper
@@ -850,11 +856,15 @@ class ContinuousPipelineOrchestrator:
             )
 
         grammar_errors = validate_token_grammar(sample)
+        quality = evaluate_token_sequence_quality(sample)
         diversity = len(set(sample)) / max(len(sample), 1)
         longest_repetition = max_repetition(sample)
         collapsed = (
             diversity < self.config.collapse_diversity_threshold
             or longest_repetition > self.config.collapse_max_repetition
+            or quality.score < self.config.min_sample_quality_score
+            or quality.path_obstructions > self.config.max_sample_path_obstructions
+            or quality.control_spam > self.config.max_sample_control_spam
         )
         result = {
             "dataset_version": DATASET_VERSION,
@@ -867,6 +877,7 @@ class ContinuousPipelineOrchestrator:
             "unique_tokens": len(set(sample)),
             "diversity": round(diversity, 6),
             "max_repetition": longest_repetition,
+            "quality": quality.to_json(),
             "collapsed": collapsed,
         }
         await append_jsonl(self.live_evaluation_stats_path, result)
@@ -889,7 +900,10 @@ class ContinuousPipelineOrchestrator:
                 "TOKEN_COLLAPSE_WARNING",
                 diversity=round(diversity, 6),
                 max_repetition=longest_repetition,
-                recommendation="pause aggressive training and increase dataset diversity",
+                quality_score=round(quality.score, 6),
+                path_obstructions=quality.path_obstructions,
+                control_spam=quality.control_spam,
+                recommendation="pause aggressive training and increase gameplay-path diversity",
             )
             if self.config.mode == "autonomous":
                 self.state["training_paused_until"] = time.time() + self.config.collapse_pause_seconds
@@ -1198,6 +1212,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--download-rate", type=float, default=0.33)
     parser.add_argument("--comment-rate", type=float, default=0.33)
     parser.add_argument("--include-comments", action="store_true")
+    parser.add_argument("--download-audio", action="store_true")
     parser.add_argument("--comments-pages", type=int, default=0)
     parser.add_argument("--tokenizer-poll-seconds", type=float, default=2.0)
     parser.add_argument("--metrics-interval-seconds", type=float, default=10.0)
@@ -1220,6 +1235,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-sample-tokens", type=int, default=40)
     parser.add_argument("--temperature", type=float, default=0.9)
     parser.add_argument("--checkpoint-interval-steps", type=int, default=10_000)
+    parser.add_argument("--min-sample-quality-score", type=float, default=80.0)
+    parser.add_argument("--max-sample-path-obstructions", type=int, default=0)
+    parser.add_argument("--max-sample-control-spam", type=int, default=2)
     parser.add_argument("--shutdown-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO")
     parser.add_argument("--once", action="store_true", help="Process currently queued local data once without starting scraper.")
@@ -1246,6 +1264,7 @@ def config_from_args(args: argparse.Namespace) -> OrchestratorConfig:
         download_rate=args.download_rate,
         comment_rate=args.comment_rate,
         include_comments=args.include_comments,
+        download_audio=args.download_audio,
         comments_pages=args.comments_pages,
         tokenizer_poll_seconds=args.tokenizer_poll_seconds,
         metrics_interval_seconds=args.metrics_interval_seconds,
@@ -1268,6 +1287,9 @@ def config_from_args(args: argparse.Namespace) -> OrchestratorConfig:
         min_sample_tokens=args.min_sample_tokens,
         temperature=args.temperature,
         checkpoint_interval_steps=args.checkpoint_interval_steps,
+        min_sample_quality_score=args.min_sample_quality_score,
+        max_sample_path_obstructions=args.max_sample_path_obstructions,
+        max_sample_control_spam=args.max_sample_control_spam,
         shutdown_timeout_seconds=args.shutdown_timeout_seconds,
     )
 

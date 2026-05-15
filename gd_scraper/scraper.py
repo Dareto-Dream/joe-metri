@@ -5,6 +5,7 @@ import contextlib
 import logging
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any
 
 from .errors import GDRequestError, ShutdownRequested
@@ -15,6 +16,7 @@ from .parser import (
     candidate_from_search_level,
     comment_page_record,
     is_auto_level,
+    level_audio_record,
     level_record,
     parse_comment_response,
     parse_download_response,
@@ -51,6 +53,7 @@ class GeometryDashScraper:
         comments_pages: int = 0,
         comments_mode: int = 0,
         comments_count: int = 10,
+        download_audio: bool = False,
         metrics_interval: float = 60.0,
     ) -> None:
         self.client = client
@@ -64,6 +67,7 @@ class GeometryDashScraper:
         self.comments_pages = max(comments_pages, 0)
         self.comments_mode = comments_mode
         self.comments_count = comments_count
+        self.download_audio = download_audio
         self.metrics_interval = metrics_interval
 
         self.stats = RunStats()
@@ -131,6 +135,7 @@ class GeometryDashScraper:
         async with (
             JsonlWriter(self.store.levels_path) as level_writer,
             JsonlWriter(self.store.songs_path) as song_writer,
+            JsonlWriter(self.store.level_audio_path) as level_audio_writer,
             JsonlWriter(self.store.comments_path) as comment_writer,
             JsonlWriter(self.store.discovered_path) as discovered_writer,
             JsonlWriter(self.store.failures_path) as failure_writer,
@@ -147,6 +152,7 @@ class GeometryDashScraper:
                         queue,
                         level_writer,
                         song_writer,
+                        level_audio_writer,
                         comment_writer,
                         rejected_writer,
                         failure_writer,
@@ -335,6 +341,7 @@ class GeometryDashScraper:
         queue: asyncio.Queue[Candidate | None],
         level_writer: JsonlWriter,
         song_writer: JsonlWriter,
+        level_audio_writer: JsonlWriter,
         comment_writer: JsonlWriter,
         rejected_writer: JsonlWriter,
         failure_writer: JsonlWriter,
@@ -353,6 +360,7 @@ class GeometryDashScraper:
                         candidate,
                         level_writer,
                         song_writer,
+                        level_audio_writer,
                         comment_writer,
                         rejected_writer,
                         failure_writer,
@@ -365,6 +373,7 @@ class GeometryDashScraper:
         candidate: Candidate,
         level_writer: JsonlWriter,
         song_writer: JsonlWriter,
+        level_audio_writer: JsonlWriter,
         comment_writer: JsonlWriter,
         rejected_writer: JsonlWriter,
         failure_writer: JsonlWriter,
@@ -430,12 +439,16 @@ class GeometryDashScraper:
             return
 
         record = level_record(download, candidate, validation)
+        audio_record = level_audio_record(download, candidate)
+        if self.download_audio:
+            await self._cache_level_audio(audio_record, failure_writer)
         async with self.id_lock:
             if self._target_reached():
                 self.reserved_saves = max(self.reserved_saves - 1, 0)
                 self.stats.skipped += 1
                 return
             await level_writer.write(record)
+            await level_audio_writer.write(audio_record)
             await append_id_async(self.store.downloaded_ids_path, candidate.level_id)
             self.downloaded_ids.add(candidate.level_id)
             self.stats.saved += 1
@@ -463,6 +476,8 @@ class GeometryDashScraper:
                     "song_id": song.song_id,
                     "name": song.name,
                     "artist": song.artist,
+                    "size": song.size,
+                    "download_url": song.download_url,
                     "raw": song.raw,
                     "parsed": song.data,
                     "source": source,
@@ -471,6 +486,56 @@ class GeometryDashScraper:
             )
             self.song_ids.add(song.song_id)
             self.stats.songs_saved += 1
+
+    async def _cache_level_audio(self, audio_record: dict[str, Any], failure_writer: JsonlWriter) -> None:
+        audio = dict(audio_record.get("audio") or {})
+        url = str(audio.get("download_url") or "")
+        if not url:
+            audio["cached"] = False
+            audio_record["audio"] = audio
+            return
+
+        song_id = int(audio_record.get("song_id") or 0)
+        suffix = Path(urlparse(url).path).suffix.lower()
+        if suffix not in {".mp3", ".ogg", ".wav"}:
+            suffix = ".mp3"
+        audio_path = self.store.audio_dir / f"{song_id}{suffix}"
+        audio["local_path"] = str(audio_path)
+        if audio_path.exists() and audio_path.stat().st_size > 0:
+            audio["cached"] = True
+            audio["bytes"] = audio_path.stat().st_size
+            audio_record["audio"] = audio
+            return
+
+        download_audio = getattr(self.client, "download_audio", None)
+        if not callable(download_audio):
+            audio["cached"] = False
+            audio["cache_error"] = "client_audio_download_unavailable"
+            audio_record["audio"] = audio
+            return
+
+        try:
+            payload = await download_audio(url)
+        except Exception as exc:  # noqa: BLE001
+            audio["cached"] = False
+            audio["cache_error"] = str(exc)
+            audio_record["audio"] = audio
+            await self._log_failure(
+                failure_writer,
+                stage="audio",
+                level_id=int(audio_record.get("level_id") or 0),
+                source=str(audio_record.get("source") or ""),
+                error=str(exc),
+            )
+            return
+
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = audio_path.with_suffix(audio_path.suffix + ".tmp")
+        tmp_path.write_bytes(payload)
+        tmp_path.replace(audio_path)
+        audio["cached"] = True
+        audio["bytes"] = len(payload)
+        audio_record["audio"] = audio
 
     async def _download_comments(
         self,

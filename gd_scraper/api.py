@@ -129,6 +129,22 @@ class GDClient:
         }
         return await self._post("getGJComments21.php", params, self.comment_limiter)
 
+    async def download_audio(self, url: str) -> bytes:
+        if self._session is None:
+            raise RuntimeError("GDClient must be used as an async context manager")
+        self._raise_if_shutdown_requested()
+        await self.download_limiter.wait(self._shutdown_event)
+        self._raise_if_shutdown_requested()
+        async with self._session.get(url) as response:
+            if response.status != 200:
+                raise GDRequestError(
+                    f"audio download returned HTTP {response.status}",
+                    endpoint=url,
+                    status=response.status,
+                    response_text=(await response.text())[:500],
+                )
+            return await response.read()
+
     async def _post(
         self,
         endpoint: str,

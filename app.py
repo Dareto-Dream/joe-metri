@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import json
 import os
 from pathlib import Path
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from runtime.audio import AudioAnalysis, EnergyPoint, EnergySection, SUPPORTED_AUDIO_EXTENSIONS, analyze_audio
@@ -30,8 +33,8 @@ from runtime.exporter import (
     write_generation_exports,
 )
 from runtime.generator import GenerationResult, MechanicsRuntime
+from runtime.planner import plan_tokens
 from runtime.reconstructor import reconstruct_layout
-from runtime.sampler import sample_tokens
 from runtime.save_codec import SaveCodecError, inject_level_string_into_local_save, inject_level_string_into_save
 from runtime.validator import validate_generation
 from gd_scraper.storage import loads_json
@@ -86,6 +89,7 @@ async def generate_level(
     top_k: int = Form(default=40),
     max_tokens: int = Form(default=360),
     seed: int = Form(default=7),
+    planning_iterations: int = Form(default=4),
 ) -> JSONResponse:
     if audio is not None:
         path = await _save_upload(audio)
@@ -98,17 +102,62 @@ async def generate_level(
     else:
         raise HTTPException(status_code=400, detail="audio_required")
 
-    controls = GenerationControls(
-        difficulty=difficulty,
-        alignments=_parse_alignments(alignments),
-        temperature=max(0.2, min(1.8, float(temperature))),
-        top_k=max(1, min(80, int(top_k))),
-        max_tokens=max(90, min(900, int(max_tokens))),
-        seed=int(seed),
-    )
+    controls = _generation_controls(difficulty, alignments, temperature, top_k, max_tokens, seed, planning_iterations)
     result = runtime.generate_from_audio(path, filename=filename, controls=controls)
     generations[result.generation_id] = result
     return JSONResponse(result.to_json())
+
+
+@app.post("/generate-stream")
+async def generate_level_stream(
+    audio: UploadFile | None = File(default=None),
+    upload_id: str | None = Form(default=None),
+    difficulty: str = Form(default="Hard"),
+    alignments: str = Form(default="Flow"),
+    temperature: float = Form(default=0.9),
+    top_k: int = Form(default=40),
+    max_tokens: int = Form(default=360),
+    seed: int = Form(default=7),
+    planning_iterations: int = Form(default=4),
+) -> StreamingResponse:
+    if audio is not None:
+        path = await _save_upload(audio)
+        filename = audio.filename
+    elif upload_id:
+        path = uploaded_audio.get(upload_id)
+        filename = path.name if path is not None else None
+        if path is None:
+            raise HTTPException(status_code=404, detail="upload_not_found")
+    else:
+        raise HTTPException(status_code=400, detail="audio_required")
+
+    controls = _generation_controls(difficulty, alignments, temperature, top_k, max_tokens, seed, planning_iterations)
+
+    def stream_events() -> object:
+        events: queue.Queue[dict[str, object] | None] = queue.Queue()
+
+        def emit(event: dict[str, object]) -> None:
+            events.put(event)
+
+        def run_generation() -> None:
+            try:
+                result = runtime.generate_from_audio(path, filename=filename, controls=controls, event_callback=emit)
+                generations[result.generation_id] = result
+                events.put({"type": "done", "generation": result.to_json()})
+            except Exception as exc:  # noqa: BLE001
+                events.put({"type": "error", "error": str(exc)})
+            finally:
+                events.put(None)
+
+        thread = threading.Thread(target=run_generation, daemon=True)
+        thread.start()
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+
+    return StreamingResponse(stream_events(), media_type="text/event-stream")
 
 
 @app.get("/preview/{generation_id}")
@@ -230,6 +279,26 @@ def _parse_alignments(value: str) -> tuple[str, ...]:
     return alignments or ("Flow",)
 
 
+def _generation_controls(
+    difficulty: str,
+    alignments: str,
+    temperature: float,
+    top_k: int,
+    max_tokens: int,
+    seed: int,
+    planning_iterations: int,
+) -> GenerationControls:
+    return GenerationControls(
+        difficulty=difficulty,
+        alignments=_parse_alignments(alignments),
+        temperature=max(0.2, min(1.8, float(temperature))),
+        top_k=max(1, min(80, int(top_k))),
+        max_tokens=max(90, min(900, int(max_tokens))),
+        seed=int(seed),
+        planning_iterations=max(1, min(16, int(planning_iterations))),
+    )
+
+
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python app.py",
@@ -263,6 +332,7 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=40)
     parser.add_argument("--max-tokens", type=int, default=360)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--planning-iterations", type=int, default=4)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     return parser
@@ -292,6 +362,7 @@ def run_cli(args: argparse.Namespace) -> int:
             top_k=max(1, min(80, int(args.top_k))),
             max_tokens=max(90, min(900, int(args.max_tokens))),
             seed=int(args.seed),
+            planning_iterations=max(1, min(16, int(args.planning_iterations))),
         )
         result = runtime.generate_from_audio(args.audio, filename=args.audio.name, controls=controls)
         metrics = write_generation_exports(result, export_dir, metadata=metadata)
@@ -307,6 +378,7 @@ def run_cli(args: argparse.Namespace) -> int:
                 top_k=max(1, min(80, int(args.top_k))),
                 max_tokens=max(90, min(900, int(args.max_tokens))),
                 seed=int(args.seed),
+                planning_iterations=max(1, min(16, int(args.planning_iterations))),
             )
             tokens = generate_cli_tokens(controls)
             print(f"sample token file not found; generated tokens from {runtime.model_path}")
@@ -381,7 +453,7 @@ def load_cli_tokens(path: Path) -> list[str] | None:
 
 def generate_cli_tokens(controls: GenerationControls) -> list[str]:
     conditioning = build_conditioning(default_cli_audio_analysis(), controls)
-    return sample_tokens(
+    plan = plan_tokens(
         runtime.model,
         token_to_id=runtime.token_to_id,
         id_to_token=runtime.id_to_token,
@@ -389,7 +461,9 @@ def generate_cli_tokens(controls: GenerationControls) -> list[str]:
         seed=controls.seed,
         temperature=controls.temperature,
         top_k=controls.top_k,
+        iterations=controls.planning_iterations,
     )
+    return plan.best.tokens
 
 
 def default_cli_audio_analysis() -> AudioAnalysis:

@@ -98,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--comment-rate", type=float, default=0.33, help="Comment requests per second.")
     parser.add_argument("--include-comments", action="store_true", help="Fetch raw comment pages for saved levels.")
+    parser.add_argument("--download-audio", action="store_true", help="Cache custom-song audio files for saved levels.")
     parser.add_argument("--comments-pages", type=int, default=1, help="Comment pages per saved level when enabled.")
     parser.add_argument("--comments-mode", type=int, default=0, help="GD comments mode parameter.")
     parser.add_argument("--comments-count", type=int, default=10, help="Comments per page request.")
@@ -157,6 +158,7 @@ async def async_main(args: argparse.Namespace) -> int:
             concurrency=args.concurrency,
             retry_rejected=args.retry_rejected,
             include_comments=args.include_comments,
+            download_audio=args.download_audio,
             comments_pages=args.comments_pages,
             comments_mode=args.comments_mode,
             comments_count=args.comments_count,

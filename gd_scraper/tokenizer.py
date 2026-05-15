@@ -385,6 +385,8 @@ def tokenized_record_from_level(
         "level_id": to_int(level.get("level_id")),
         "difficulty": str(level.get("difficulty", "NA")),
         "song_id": to_int(level.get("song_id")),
+        "song_type": str(level.get("song_type", "")),
+        "audio": dict(level.get("audio") or {}),
         "source": str(level.get("source", "")),
         "object_count_raw": len(objects),
         "object_count_gameplay": len(gameplay_objects),

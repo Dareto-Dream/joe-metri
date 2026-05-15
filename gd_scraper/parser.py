@@ -340,6 +340,7 @@ def level_record(
     level = download.level
     level_id = to_int(level.get("1"))
     song_id, song_type = song_id_and_type(level)
+    song = song_lookup(download.songs).get(song_id)
 
     user_author = ""
     if download.user:
@@ -358,6 +359,7 @@ def level_record(
         "likes": to_int(level.get("14")),
         "song_id": song_id,
         "song_type": song_type,
+        "audio": audio_metadata(song_id, song_type, song),
         "source": candidate.source,
         "source_page": candidate.page,
         "object_count": validation.object_count,
@@ -384,3 +386,49 @@ def level_record(
             "search": candidate.metadata,
         },
     }
+
+
+def level_audio_record(
+    download: DownloadResponse,
+    candidate: Candidate,
+) -> dict[str, Any]:
+    level = download.level
+    level_id = to_int(level.get("1"))
+    song_id, song_type = song_id_and_type(level)
+    song = song_lookup(download.songs).get(song_id)
+    return {
+        "dataset_version": DATASET_VERSION,
+        "scraper_version": SCRAPER_VERSION,
+        "level_id": level_id,
+        "song_id": song_id,
+        "song_type": song_type,
+        "source": candidate.source,
+        "source_page": candidate.page,
+        "fetched_at": epoch_now(),
+        "audio": audio_metadata(song_id, song_type, song),
+    }
+
+
+def song_lookup(songs: list[Song]) -> dict[int, Song]:
+    return {song.song_id: song for song in songs}
+
+
+def audio_metadata(song_id: int, song_type: str, song: Song | None) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "song_id": song_id,
+        "song_type": song_type,
+        "has_custom_song_metadata": song is not None,
+        "conditioning_ready": song_type == "custom" and song is not None and bool(song.download_url),
+    }
+    if song is not None:
+        metadata.update(
+            {
+                "name": song.name,
+                "artist": song.artist,
+                "size": song.size,
+                "download_url": song.download_url,
+                "raw": song.raw,
+                "parsed": song.data,
+            }
+        )
+    return metadata

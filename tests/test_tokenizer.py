@@ -41,6 +41,8 @@ class TokenizerTests(unittest.TestCase):
             "level_id": 123,
             "difficulty": "HARD",
             "song_id": 999,
+            "song_type": "custom",
+            "audio": {"song_id": 999, "song_type": "custom", "conditioning_ready": True},
             "source": "featured",
             "level_data": encoded_level(raw_level),
         }
@@ -62,6 +64,8 @@ class TokenizerTests(unittest.TestCase):
         self.assertEqual(tokens[spike_index : spike_index + 2], ["SPIKE", "Y1"])
         self.assertEqual(tokens[orb_index : orb_index + 2], ["ORB_YELLOW", "Y3"])
         self.assertEqual(artifacts.token_record["level_id"], 123)
+        self.assertEqual(artifacts.token_record["song_type"], "custom")
+        self.assertTrue(artifacts.token_record["audio"]["conditioning_ready"])
 
     def test_rejects_all_objects_in_one_timestep(self) -> None:
         raw_level = "kS1,0;1,8,2,15,3,45;1,36,2,15,3,75;1,13,2,15,3,105"

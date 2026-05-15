@@ -36,6 +36,14 @@ class Song:
     def artist(self) -> str:
         return self.data.get("4", "")
 
+    @property
+    def size(self) -> str:
+        return self.data.get("5", "")
+
+    @property
+    def download_url(self) -> str:
+        return self.data.get("10", "")
+
 
 @dataclass
 class Candidate:

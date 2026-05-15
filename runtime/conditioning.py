@@ -32,6 +32,7 @@ class GenerationControls:
     top_k: int = 40
     max_tokens: int = 360
     seed: int = 7
+    planning_iterations: int = 4
 
 
 @dataclass(frozen=True)

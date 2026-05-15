@@ -55,6 +55,7 @@ class CheckpointStore:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
         self.raw_dir = data_dir / "raw"
+        self.audio_dir = self.raw_dir / "audio"
         self.processed_dir = data_dir / "processed"
         self.tokenized_dir = data_dir / "tokenized"
         self.checkpoint_dir = data_dir / "checkpoints"
@@ -62,6 +63,7 @@ class CheckpointStore:
         self.levels_path = self.raw_dir / "levels.jsonl"
         self.comments_path = self.raw_dir / "comments.jsonl"
         self.songs_path = self.raw_dir / "songs.jsonl"
+        self.level_audio_path = self.raw_dir / "level_audio.jsonl"
         self.parsed_levels_path = self.processed_dir / "parsed_levels.jsonl"
         self.gameplay_objects_path = self.processed_dir / "gameplay_objects.jsonl"
         self.mechanics_tokens_path = self.tokenized_dir / "mechanics_tokens.jsonl"
@@ -85,6 +87,7 @@ class CheckpointStore:
 
     def ensure(self) -> None:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
+        self.audio_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
         self.tokenized_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +95,7 @@ class CheckpointStore:
         self.levels_path.touch(exist_ok=True)
         self.comments_path.touch(exist_ok=True)
         self.songs_path.touch(exist_ok=True)
+        self.level_audio_path.touch(exist_ok=True)
         self.parsed_levels_path.touch(exist_ok=True)
         self.gameplay_objects_path.touch(exist_ok=True)
         self.mechanics_tokens_path.touch(exist_ok=True)

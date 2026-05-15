@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from typing import Callable
 
 from gd_scraper.gd_objects import ORB_TOKENS, PORTAL_TOKENS, PRIMARY_MECHANIC_TOKENS, SOLID_TOKENS
 from gd_scraper.train_mechanics import TinyNgramModel, allowed_next_tokens, close_sample
@@ -17,11 +18,15 @@ def sample_tokens(
     seed: int,
     temperature: float,
     top_k: int,
+    token_callback: Callable[[str, list[str]], None] | None = None,
 ) -> list[str]:
     rng = random.Random(seed)
     pad_id = token_to_id["<PAD>"]
     unk_id = token_to_id["<UNK>"]
     tokens = conditioning.prefix[:]
+    if token_callback is not None:
+        for token in tokens:
+            token_callback(token, tokens[:])
 
     while len(tokens) < conditioning.target_tokens and tokens[-1] != "END":
         context_tokens = tokens[-model.context_size :]
@@ -41,9 +46,15 @@ def sample_tokens(
             top_k=top_k,
         )
         tokens.append(next_token)
+        if token_callback is not None:
+            token_callback(next_token, tokens[:])
 
     if tokens[-1] != "END":
+        previous_length = len(tokens)
         close_sample(tokens)
+        if token_callback is not None:
+            for token in tokens[previous_length:]:
+                token_callback(token, tokens[:])
     return tokens
 
 

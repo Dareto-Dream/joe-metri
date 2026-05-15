@@ -13,8 +13,8 @@ from gd_scraper.train_mechanics import TinyNgramModel, model_from_json
 
 from .audio import AudioAnalysis, analyze_audio
 from .conditioning import ConditioningProfile, GenerationControls, build_conditioning
+from .planner import GenerationPlan, PlanningEventCallback, plan_tokens
 from .reconstructor import RuntimeLayout, reconstruct_layout
-from .sampler import sample_tokens
 from .validator import ValidationResult, validate_generation
 
 
@@ -28,6 +28,8 @@ class GenerationMetrics:
     orb_count: int
     invalid_token_rate: float
     object_count: int
+    planning_iterations: int
+    planning_score: float
 
     def to_json(self) -> dict[str, float | int]:
         return {
@@ -39,6 +41,8 @@ class GenerationMetrics:
             "orb_count": self.orb_count,
             "invalid_token_rate": round(self.invalid_token_rate, 6),
             "object_count": self.object_count,
+            "planning_iterations": self.planning_iterations,
+            "planning_score": round(self.planning_score, 6),
         }
 
 
@@ -53,6 +57,7 @@ class GenerationResult:
     layout: RuntimeLayout
     metrics: GenerationMetrics
     model_path: str
+    plan: GenerationPlan
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -65,6 +70,7 @@ class GenerationResult:
                 "top_k": self.controls.top_k,
                 "max_tokens": self.controls.max_tokens,
                 "seed": self.controls.seed,
+                "planning_iterations": self.controls.planning_iterations,
             },
             "conditioning": {
                 "prefix": self.conditioning.prefix,
@@ -77,6 +83,7 @@ class GenerationResult:
             "validation": self.validation.to_json(),
             "preview": self.layout.to_json(),
             "metrics": self.metrics.to_json(),
+            "planning": self.plan.to_json(),
             "model_path": self.model_path,
         }
 
@@ -100,12 +107,13 @@ class MechanicsRuntime:
         *,
         filename: str | None = None,
         controls: GenerationControls | None = None,
+        event_callback: PlanningEventCallback | None = None,
     ) -> GenerationResult:
         active_controls = controls or GenerationControls()
         started = time.perf_counter()
         audio = analyze_audio(audio_path, filename=filename)
         conditioning = build_conditioning(audio, active_controls)
-        tokens = sample_tokens(
+        plan = plan_tokens(
             self.model,
             token_to_id=self.token_to_id,
             id_to_token=self.id_to_token,
@@ -113,11 +121,14 @@ class MechanicsRuntime:
             seed=active_controls.seed,
             temperature=active_controls.temperature,
             top_k=active_controls.top_k,
+            iterations=active_controls.planning_iterations,
+            event_callback=event_callback,
         )
+        tokens = plan.best.tokens
         validation = validate_generation(tokens, known_tokens=self.known_tokens)
         layout = reconstruct_layout(tokens)
         elapsed = max(time.perf_counter() - started, 1e-9)
-        metrics = build_metrics(tokens, validation, layout, elapsed)
+        metrics = build_metrics(tokens, validation, layout, elapsed, plan=plan)
         return GenerationResult(
             generation_id=uuid.uuid4().hex,
             audio=audio,
@@ -128,6 +139,7 @@ class MechanicsRuntime:
             layout=layout,
             metrics=metrics,
             model_path=str(self.model_path),
+            plan=plan,
         )
 
 
@@ -136,6 +148,7 @@ def build_metrics(
     validation: ValidationResult,
     layout: RuntimeLayout,
     elapsed_seconds: float,
+    plan: GenerationPlan | None = None,
 ) -> GenerationMetrics:
     sequence_length = len(tokens)
     portal_count = sum(1 for token in tokens if token in PORTAL_TOKENS)
@@ -149,6 +162,8 @@ def build_metrics(
         orb_count=orb_count,
         invalid_token_rate=validation.invalid_token_rate,
         object_count=len(layout.objects),
+        planning_iterations=len(plan.candidates) if plan is not None else 1,
+        planning_score=plan.best.quality.score if plan is not None else 0.0,
     )
 
 

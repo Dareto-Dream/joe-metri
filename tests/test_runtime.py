@@ -14,6 +14,7 @@ from runtime.audio import analyze_audio
 from runtime.conditioning import GenerationControls, build_conditioning
 from runtime.exporter import GmdMetadata, is_valid_gd_object_string, validate_layout_export, write_layout_exports
 from runtime.generator import MechanicsRuntime
+from gd_scraper.quality import evaluate_token_sequence_quality
 from runtime.reconstructor import reconstruct_layout
 from runtime.save_codec import (
     CODEC_BASE64_GZIP,
@@ -100,6 +101,66 @@ class RuntimeTests(unittest.TestCase):
         self.assertGreater(len(result.tokens), 20)
         self.assertGreater(len(result.layout.gd_object_strings), 0)
         self.assertGreater(result.metrics.tokens_per_second, 0)
+        self.assertGreaterEqual(result.metrics.planning_iterations, 1)
+        self.assertIn("candidates", result.to_json()["planning"])
+
+    def test_runtime_planning_streams_candidate_events(self) -> None:
+        events: list[dict[str, object]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pulse.wav"
+            write_pulse_wav(path)
+            runtime = MechanicsRuntime(Path("models") / "mechanics_v1")
+            result = runtime.generate_from_audio(
+                path,
+                controls=GenerationControls(
+                    difficulty="Hard",
+                    alignments=("Flow",),
+                    max_tokens=100,
+                    seed=5,
+                    planning_iterations=2,
+                ),
+                event_callback=events.append,
+            )
+
+        self.assertEqual(len(result.plan.candidates), 2)
+        self.assertTrue(any(event.get("type") == "token" for event in events))
+        self.assertTrue(any(event.get("type") == "selected" for event in events))
+
+    def test_quality_penalizes_player_path_obstructions(self) -> None:
+        open_path = [
+            "START",
+            "DIFF_HARD",
+            "ALIGN_UNKNOWN",
+            "STEP",
+            "ORB_YELLOW",
+            "Y4",
+            "STEP",
+            "SPIKE",
+            "Y1",
+            "STEP",
+            "END",
+        ]
+        blocked_path = [
+            "START",
+            "DIFF_HARD",
+            "ALIGN_UNKNOWN",
+            "BLOCK",
+            "Y1",
+            "WIDTH_1",
+            "STEP",
+            "BLOCK",
+            "Y2",
+            "WIDTH_1",
+            "STEP",
+            "END",
+        ]
+
+        open_quality = evaluate_token_sequence_quality(open_path)
+        blocked_quality = evaluate_token_sequence_quality(blocked_path)
+
+        self.assertEqual(open_quality.path_obstructions, 0)
+        self.assertGreater(blocked_quality.path_obstructions, 0)
+        self.assertLess(blocked_quality.score, open_quality.score)
 
     def test_k4_level_string_codec_roundtrips(self) -> None:
         level_string = "kS1,0;1,1,2,15,3,30;1,8,2,45,3,60"

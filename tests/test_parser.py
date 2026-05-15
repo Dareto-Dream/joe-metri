@@ -10,6 +10,7 @@ from gd_scraper.parser import (
     comment_page_record,
     difficulty_label,
     level_record,
+    level_audio_record,
     parse_download_response,
     parse_key_value_pairs,
     parse_comment_response,
@@ -52,7 +53,11 @@ class ParserTests(unittest.TestCase):
 
     def test_download_validation(self) -> None:
         level_data = encoded_level("kS1,0;k1,1,2,15;k1,2,2,30")
-        raw = f"1:123:2:Example:4:{level_data}:6:42:8:10:9:30:10:10:12:0:14:5#hash1#hash2##"
+        raw = (
+            f"1:123:2:Example:4:{level_data}:6:42:8:10:9:30:10:10:12:0:14:5:35:999"
+            "#hash1#hash2##"
+            "1~|~999~|~2~|~Song Name~|~4~|~Artist~|~5~|~1.23~|~10~|~https://audio.example/song.mp3"
+        )
         download = parse_download_response(raw)
         result = validate_level_data(download.level["4"])
         self.assertEqual(result.object_count, 2)
@@ -70,11 +75,18 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(record["dataset_version"], 1)
         self.assertEqual(record["scraper_version"], "1.0.0")
         self.assertEqual(record["level_id"], 123)
-        self.assertEqual(record["song_type"], "official")
+        self.assertEqual(record["song_type"], "custom")
+        self.assertTrue(record["audio"]["conditioning_ready"])
+        self.assertEqual(record["audio"]["download_url"], "https://audio.example/song.mp3")
         self.assertEqual(record["source_page"], 12)
         self.assertEqual(record["level_hash"], "hash1")
         self.assertIsInstance(record["fetched_at"], int)
         self.assertEqual(record["metadata"]["candidate_sequence"], 3)
+
+        audio_record = level_audio_record(download, candidate)
+        self.assertEqual(audio_record["level_id"], 123)
+        self.assertEqual(audio_record["song_id"], 999)
+        self.assertEqual(audio_record["audio"]["name"], "Song Name")
 
     def test_invalid_level_data_rejected(self) -> None:
         with self.assertRaises(ValidationError) as caught:
