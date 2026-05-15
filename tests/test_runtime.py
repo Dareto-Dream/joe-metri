@@ -12,7 +12,7 @@ import math
 
 from runtime.audio import analyze_audio
 from runtime.conditioning import GenerationControls, build_conditioning
-from runtime.exporter import is_valid_gd_object_string, validate_layout_export, write_layout_exports
+from runtime.exporter import GmdMetadata, is_valid_gd_object_string, validate_layout_export, write_layout_exports
 from runtime.generator import MechanicsRuntime
 from runtime.reconstructor import reconstruct_layout
 from runtime.save_codec import (
@@ -27,9 +27,11 @@ from runtime.save_codec import (
     encode_level_string_k4,
     encode_save_xml,
     find_injected_k4,
+    find_value_after_key,
     find_local_level_k4,
     inject_level_string_into_local_save,
     inject_level_string_into_save,
+    parse_save_xml,
 )
 from runtime.validator import validate_generation
 
@@ -128,11 +130,53 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertTrue((export_dir / "generated_level.json").exists())
             self.assertTrue((export_dir / "level_string.txt").exists())
+            self.assertTrue((export_dir / "generated.gmd").exists())
             metrics_payload = json.loads((export_dir / "export_metrics.json").read_text(encoding="utf-8"))
 
         self.assertEqual(metrics.objects_generated, 2)
+        self.assertEqual(metrics_payload["tokens_generated"], len(tokens))
         self.assertEqual(metrics_payload["objects_generated"], 2)
         self.assertEqual(metrics_payload["STEP_count"], 2)
+
+    def test_layout_export_writes_gdshare_gmd_payload(self) -> None:
+        tokens = [
+            "START",
+            "DIFF_HARD",
+            "ALIGN_UNKNOWN",
+            "BLOCK",
+            "Y1",
+            "WIDTH_1",
+            "STEP",
+            "SPIKE",
+            "Y2",
+            "STEP",
+            "END",
+        ]
+        layout = reconstruct_layout(tokens)
+        validation = validate_generation(tokens)
+
+        with tempfile.TemporaryDirectory() as directory:
+            export_dir = Path(directory)
+            write_layout_exports(
+                tokens,
+                validation,
+                layout,
+                export_dir,
+                metadata=GmdMetadata(level_name="Runtime GMD Test", official_song_id=1),
+            )
+            gmd_payload = (export_dir / "generated.gmd").read_text(encoding="utf-8")
+
+        root = parse_save_xml(gmd_payload)
+        k4 = find_value_after_key(root, "k4")
+        name = find_value_after_key(root, "k2")
+        song = find_value_after_key(root, "k8")
+
+        self.assertIsNotNone(k4)
+        self.assertIsNotNone(name)
+        self.assertIsNotNone(song)
+        self.assertEqual(name.text, "Runtime GMD Test")
+        self.assertEqual(song.text, "1")
+        self.assertEqual(decode_level_string_k4(k4.text or ""), layout.level_string)
 
     def test_layout_export_records_invalid_token_warnings_without_crashing(self) -> None:
         tokens = [

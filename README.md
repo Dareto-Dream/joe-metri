@@ -137,7 +137,7 @@ python -m screensavers.main
 
 Open `http://127.0.0.1:5000/screensaver_1_terminal.html` or `http://127.0.0.1:5000/screensaver_2_minimal.html`. The screensavers read `data/logs/orchestrator_metrics.jsonl`, `data/logs/orchestrator_events.jsonl`, and live model artifacts; they do not spoof a separate trainer.
 
-## Web runtime and local level injection
+## Web runtime and GDShare export
 
 Start the interactive generator:
 
@@ -145,15 +145,23 @@ Start the interactive generator:
 .\.venv\Scripts\python.exe app.py
 ```
 
-Open `http://127.0.0.1:8000/`, upload MP3/WAV/OGG audio, generate gameplay, preview the 2D layout, and export JSON/object strings/level strings/k4 data.
+Open `http://127.0.0.1:8000/`, upload MP3/WAV/OGG audio, generate gameplay, preview the 2D layout, and export JSON/object strings/level strings/k4/GMD data.
 
-CLI export from the latest sample token file:
+Primary CLI export from the latest sample token file:
 
 ```powershell
-.\.venv\Scripts\python.exe app.py --export-object-string
+.\.venv\Scripts\python.exe app.py --export-gmd
 ```
 
-Inject into an editable local Geometry Dash level without overwriting the active save:
+Export and open the folder:
+
+```powershell
+.\.venv\Scripts\python.exe app.py --export-gmd --open-exports
+```
+
+The GDShare path writes `exports/generated.gmd`, `exports/generated_level.json`, `exports/level_string.txt`, and `exports/export_metrics.json`. Import `generated.gmd` from Geometry Dash with Geode and GDShare installed.
+
+Legacy save-file injection is still available for existing experiments, but it is no longer the primary runtime workflow. To inject into an editable local Geometry Dash level without overwriting the active save:
 
 ```powershell
 .\.venv\Scripts\python.exe app.py --inject-local-level --save-path "$env:LOCALAPPDATA\GeometryDash\CCLocalLevels.dat" --target-level-name "AI Test"
@@ -165,7 +173,7 @@ Slot-based local injection is also supported:
 .\.venv\Scripts\python.exe app.py --inject-local-level --target-slot 0
 ```
 
-The local injector writes `exports/CCLocalLevels.backup.dat`, `exports/decoded_save.xml`, `exports/generated_level.json`, `exports/level_string.txt`, `exports/export_metrics.json`, and `exports/CCLocalLevels.generated.dat`. It detects the save codec, preserves unrelated plist keys, rewrites only `k4`, and roundtrip-decodes the generated save before reporting success.
+The local injector writes `exports/CCLocalLevels.backup.dat`, `exports/decoded_save.xml`, `exports/generated_level.json`, `exports/level_string.txt`, `exports/generated.gmd`, `exports/export_metrics.json`, and `exports/CCLocalLevels.generated.dat`. It detects the save codec, preserves unrelated plist keys, rewrites only `k4`, and roundtrip-decodes the generated save before reporting success.
 
 Full local tokenization and validation:
 
