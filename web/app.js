@@ -12,7 +12,7 @@ const ctx = canvas.getContext("2d");
 const exportJson = document.querySelector("#export-json");
 const exportObjects = document.querySelector("#export-objects");
 const exportLevel = document.querySelector("#export-level");
-const exportK4 = document.querySelector("#export-k4");
+const exportGmd = document.querySelector("#export-gmd");
 const saveFile = document.querySelector("#save-file");
 const saveLabel = document.querySelector("#save-label");
 const injectSave = document.querySelector("#inject-save");
@@ -67,7 +67,7 @@ form.addEventListener("submit", async (event) => {
 exportJson.addEventListener("click", () => openExport("json"));
 exportObjects.addEventListener("click", () => openExport("object_strings"));
 exportLevel.addEventListener("click", () => openExport("level_string"));
-exportK4.addEventListener("click", () => openExport("k4"));
+exportGmd.addEventListener("click", () => openExport("gmd"));
 saveFile.addEventListener("change", () => {
   saveLabel.textContent = saveFile.files[0] ? saveFile.files[0].name : "CCGameManager.dat";
 });
@@ -119,7 +119,7 @@ function renderGeneration(payload) {
   exportJson.disabled = false;
   exportObjects.disabled = false;
   exportLevel.disabled = false;
-  exportK4.disabled = false;
+  exportGmd.disabled = false;
   injectSave.disabled = false;
   drawPreview(payload);
 }

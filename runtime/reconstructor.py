@@ -1,11 +1,34 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from gd_scraper.gd_objects import SOLID_TOKENS
+from gd_scraper.gd_objects import ORB_TOKENS, PORTAL_TOKENS, SOLID_TOKENS
 from gd_scraper.reconstruction import reconstruct_tokens
 
 from .mappings import STEP_UNITS, TOKEN_TO_GD_ID, X_ORIGIN, Y_ORIGIN, Y_UNITS
+
+
+DEFAULT_COLOR_CHANNELS = (
+    "1_255_2_255_3_255_11_255_12_255_13_255_4_-1_6_1000_7_1_8_1_15_1_18_1|"
+    "1_0_2_0_3_0_11_255_12_255_13_255_4_-1_6_1001_7_1_8_1_15_1_18_1|"
+    "1_0_2_0_3_0_11_255_12_255_13_255_4_-1_6_1009_7_1_8_1_15_1_18_1|"
+    "1_0_2_0_3_0_11_255_12_255_13_255_4_-1_6_1013_7_1_8_1_15_1_18_1|"
+    "1_0_2_0_3_0_11_255_12_255_13_255_4_-1_6_1014_7_1_8_1_15_1_18_1|"
+    "1_200_2_200_3_200_11_255_12_255_13_255_4_-1_6_1004_7_1_8_1_15_1_18_1|"
+    "1_255_2_255_3_255_11_255_12_255_13_255_4_-1_6_1005_7_1_8_1_15_1_18_1|"
+    "1_255_2_255_3_255_11_255_12_255_13_255_4_-1_6_1006_7_1_8_1_15_1_18_1|"
+)
+LEVEL_STRING_HEADER = f"kS38,{DEFAULT_COLOR_CHANNELS},"
+GROUND_SEGMENT_WIDTH = 8
+MAX_INTERACTIVE_LANE = 9
+MAX_SOLID_LANE = 5
+MAX_OBJECTS_PER_STEP = 2
+CONTROL_SPACING_STEPS = 8
+GRAVITY_TOKENS = {"GRAVITY_UP", "GRAVITY_DOWN"}
+SPEED_TOKENS = {"SPEED_SLOW", "SPEED_NORMAL", "SPEED_FAST"}
+CONTROL_TOKENS = PORTAL_TOKENS | GRAVITY_TOKENS | SPEED_TOKENS
+PAD_TOKENS = {"PAD_YELLOW", "PAD_BLUE"}
+HAZARD_TOKENS = {"SPIKE", "SAW"}
 
 
 @dataclass(frozen=True)
@@ -80,8 +103,10 @@ def reconstruct_layout(tokens: list[str]) -> RuntimeLayout:
             )
         )
 
+    runtime_objects = polish_runtime_objects(runtime_objects)
     object_strings = [raw for item in runtime_objects for raw in item.gd_object_strings()]
-    level_string = "kS1,0;" + ";".join(object_strings)
+    object_strings = ordered_unique(object_strings)
+    level_string = LEVEL_STRING_HEADER + ";" + ";".join(object_strings) + (";" if object_strings else "")
     width_steps = max((item.x_step + max(1, item.width) for item in runtime_objects), default=0)
     height_lanes = max((item.y_lane for item in runtime_objects), default=0) + 1
     return RuntimeLayout(
@@ -92,6 +117,100 @@ def reconstruct_layout(tokens: list[str]) -> RuntimeLayout:
         height_lanes=height_lanes,
         errors=errors,
     )
+
+
+def polish_runtime_objects(objects: list[RuntimeObject]) -> list[RuntimeObject]:
+    if not objects:
+        return []
+
+    polished: list[RuntimeObject] = []
+    occupied_cells: set[tuple[int, int]] = set()
+    step_counts: dict[int, int] = {}
+
+    last_control_step: dict[str, int] = {}
+    seen_interactives: set[tuple[str, int, int]] = set()
+    solid_columns: dict[int, int] = {}
+
+    for item in sorted(objects, key=lambda value: (value.x_step, value.sequence)):
+        candidate = normalize_runtime_object(item)
+        if candidate is None:
+            continue
+
+        if candidate.token in SOLID_TOKENS:
+            if candidate.y_lane == 0:
+                continue
+            if solid_columns.get(candidate.x_step, 0) >= 1:
+                continue
+            free_offsets = [
+                offset
+                for offset in range(max(1, candidate.width))
+                if (candidate.x_step + offset, candidate.y_lane) not in occupied_cells
+            ]
+            if not free_offsets:
+                continue
+            candidate = replace(candidate, width=max(1, min(candidate.width, len(free_offsets))))
+            for offset in range(candidate.width):
+                occupied_cells.add((candidate.x_step + offset, candidate.y_lane))
+            solid_columns[candidate.x_step] = solid_columns.get(candidate.x_step, 0) + 1
+            polished.append(candidate)
+            continue
+
+        if step_counts.get(candidate.x_step, 0) >= MAX_OBJECTS_PER_STEP:
+            continue
+        if candidate.token in CONTROL_TOKENS and not control_is_allowed(candidate, last_control_step):
+            continue
+        key = (candidate.token, candidate.x_step, candidate.y_lane)
+        if key in seen_interactives:
+            continue
+        seen_interactives.add(key)
+        step_counts[candidate.x_step] = step_counts.get(candidate.x_step, 0) + 1
+        polished.append(candidate)
+
+    return sorted(polished, key=lambda value: (value.x_step, value.y_lane, value.sequence))
+
+
+def normalize_runtime_object(item: RuntimeObject) -> RuntimeObject | None:
+    if item.token in SOLID_TOKENS:
+        if item.y_lane > MAX_SOLID_LANE:
+            return None
+        return replace(item, width=max(1, min(item.width, GROUND_SEGMENT_WIDTH)))
+    if item.token in ORB_TOKENS | PAD_TOKENS | HAZARD_TOKENS:
+        y_lane = max(1, min(item.y_lane, MAX_INTERACTIVE_LANE))
+        return replace(item, y_lane=y_lane, y=Y_ORIGIN + y_lane * Y_UNITS)
+    if item.token in CONTROL_TOKENS:
+        y_lane = max(2, min(item.y_lane, MAX_INTERACTIVE_LANE))
+        return replace(item, y_lane=y_lane, y=Y_ORIGIN + y_lane * Y_UNITS)
+    return item
+
+
+def control_is_allowed(item: RuntimeObject, last_control_step: dict[str, int]) -> bool:
+    category = control_category(item.token)
+    last_step = last_control_step.get(category)
+    if last_step is not None and item.x_step - last_step < CONTROL_SPACING_STEPS:
+        return False
+    last_control_step[category] = item.x_step
+    return True
+
+
+def control_category(token: str) -> str:
+    if token in PORTAL_TOKENS:
+        return "portal"
+    if token in GRAVITY_TOKENS:
+        return "gravity"
+    if token in SPEED_TOKENS:
+        return "speed"
+    return token
+
+
+def ordered_unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def gd_object_string(object_id: int, x: int, y: int) -> str:

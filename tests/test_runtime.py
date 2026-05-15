@@ -82,7 +82,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(layout.objects), 2)
         self.assertIn("1,1,2,15,3,30", layout.gd_object_strings)
         self.assertIn("1,1,2,45,3,30", layout.gd_object_strings)
-        self.assertTrue(layout.level_string.startswith("kS1,0;"))
+        self.assertTrue(layout.level_string.startswith("kS38,"))
+        self.assertIn(";1,1,2,15,3,30;", layout.level_string)
         self.assertTrue(is_valid_gd_object_string(layout.gd_object_strings[0]))
 
     def test_runtime_generates_valid_layout_from_wav(self) -> None:
@@ -171,9 +172,12 @@ class RuntimeTests(unittest.TestCase):
         name = find_value_after_key(root, "k2")
         song = find_value_after_key(root, "k8")
 
+        self.assertTrue(gmd_payload.startswith('<?xml version="1.0"?><plist'))
+        self.assertNotIn("<k>root</k>", gmd_payload)
         self.assertIsNotNone(k4)
         self.assertIsNotNone(name)
         self.assertIsNotNone(song)
+        self.assertEqual(len(k4.text or "") % 4, 0)
         self.assertEqual(name.text, "Runtime GMD Test")
         self.assertEqual(song.text, "1")
         self.assertEqual(decode_level_string_k4(k4.text or ""), layout.level_string)

@@ -13,8 +13,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from runtime.audio import SUPPORTED_AUDIO_EXTENSIONS, analyze_audio
-from runtime.conditioning import GenerationControls
+from runtime.audio import AudioAnalysis, EnergyPoint, EnergySection, SUPPORTED_AUDIO_EXTENSIONS, analyze_audio
+from runtime.conditioning import GenerationControls, build_conditioning
 from runtime.exporter import (
     ExportError,
     GmdMetadata,
@@ -31,6 +31,7 @@ from runtime.exporter import (
 )
 from runtime.generator import GenerationResult, MechanicsRuntime
 from runtime.reconstructor import reconstruct_layout
+from runtime.sampler import sample_tokens
 from runtime.save_codec import SaveCodecError, inject_level_string_into_local_save, inject_level_string_into_save
 from runtime.validator import validate_generation
 from gd_scraper.storage import loads_json
@@ -298,6 +299,17 @@ def run_cli(args: argparse.Namespace) -> int:
         token_count = len(result.tokens)
     else:
         tokens = load_cli_tokens(args.tokens_file)
+        if tokens is None:
+            controls = GenerationControls(
+                difficulty=args.difficulty,
+                alignments=_parse_alignments(args.alignments),
+                temperature=max(0.2, min(1.8, float(args.temperature))),
+                top_k=max(1, min(80, int(args.top_k))),
+                max_tokens=max(90, min(900, int(args.max_tokens))),
+                seed=int(args.seed),
+            )
+            tokens = generate_cli_tokens(controls)
+            print(f"sample token file not found; generated tokens from {runtime.model_path}")
         validation = validate_generation(tokens, known_tokens=runtime.known_tokens)
         layout = reconstruct_layout(tokens)
         metrics = write_layout_exports(tokens, validation, layout, export_dir, metadata=metadata)
@@ -351,16 +363,58 @@ def run_cli(args: argparse.Namespace) -> int:
     return 0
 
 
-def load_cli_tokens(path: Path) -> list[str]:
+def load_cli_tokens(path: Path) -> list[str] | None:
+    default_live = ROOT / "models" / "mechanics_v1" / "sample_generation_live.json"
+    default_static = ROOT / "models" / "mechanics_v1" / "sample_generation.json"
     if not path.exists() and path.name == "sample_generation_live.json":
-        path = ROOT / "models" / "mechanics_v1" / "sample_generation.json"
+        path = default_static
     if not path.exists():
+        if path in (default_live, default_static):
+            return None
         raise FileNotFoundError(f"tokens file not found: {path}")
     payload = loads_json(path.read_bytes())
     tokens = payload.get("tokens")
     if not isinstance(tokens, list):
         raise ValueError(f"tokens file does not contain a token list: {path}")
     return [str(token) for token in tokens]
+
+
+def generate_cli_tokens(controls: GenerationControls) -> list[str]:
+    conditioning = build_conditioning(default_cli_audio_analysis(), controls)
+    return sample_tokens(
+        runtime.model,
+        token_to_id=runtime.token_to_id,
+        id_to_token=runtime.id_to_token,
+        conditioning=conditioning,
+        seed=controls.seed,
+        temperature=controls.temperature,
+        top_k=controls.top_k,
+    )
+
+
+def default_cli_audio_analysis() -> AudioAnalysis:
+    duration_seconds = 60.0
+    beat_interval = 0.5
+    beats = [index * beat_interval for index in range(1, int(duration_seconds / beat_interval))]
+    energy = [
+        EnergyPoint(time=index * beat_interval, value=0.45 + (0.18 if index % 4 == 0 else 0.0))
+        for index in range(int(duration_seconds / beat_interval) + 1)
+    ]
+    return AudioAnalysis(
+        filename="cli-default",
+        extension="generated",
+        duration_seconds=duration_seconds,
+        bpm=120,
+        beats=beats,
+        onsets=beats[::2],
+        energy=energy,
+        energy_sections=[
+            EnergySection(start=0.0, end=20.0, energy=0.42, label="steady"),
+            EnergySection(start=20.0, end=40.0, energy=0.58, label="active"),
+            EnergySection(start=40.0, end=duration_seconds, energy=0.5, label="steady"),
+        ],
+        decoder="synthetic",
+    )
 
 
 def default_save_path() -> Path:

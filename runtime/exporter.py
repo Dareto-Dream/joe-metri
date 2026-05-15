@@ -132,7 +132,7 @@ def build_gmd_payload(layout: RuntimeLayout, metadata: GmdMetadata | None = None
         ("kCEK", 4),
         ("k2", active_metadata.level_name),
         ("k3", description),
-        ("k4", encode_level_string_k4(layout.level_string)),
+        ("k4", encode_level_string_gmd(layout.level_string)),
         ("k5", active_metadata.creator),
         ("k14", 0),
         ("k16", active_metadata.level_version),
@@ -150,9 +150,8 @@ def build_gmd_payload(layout: RuntimeLayout, metadata: GmdMetadata | None = None
     return (
         '<?xml version="1.0"?>'
         '<plist version="1.0" gjver="2.0">'
-        "<dict><k>root</k><d>"
-        f"{body}"
-        "</d></dict></plist>"
+        f"<dict>{body}</dict>"
+        "</plist>"
     )
 
 
@@ -160,6 +159,11 @@ def _gmd_property(key: str, value: str | int) -> str:
     if isinstance(value, int):
         return f"<k>{escape(key)}</k><i>{value}</i>"
     return f"<k>{escape(key)}</k><s>{escape(value)}</s>"
+
+
+def encode_level_string_gmd(level_string: str) -> str:
+    value = encode_level_string_k4(level_string)
+    return value + ("=" * (-len(value) % 4))
 
 
 def write_generation_exports(
