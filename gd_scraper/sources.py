@@ -8,6 +8,7 @@ from typing import Any
 class DiscoverySource:
     name: str
     params: dict[str, Any]
+    name_contains: tuple[str, ...] = ()
 
 
 DEFAULT_SOURCES: dict[str, DiscoverySource] = {
@@ -22,6 +23,7 @@ DEFAULT_SOURCES: dict[str, DiscoverySource] = {
     "hard_demons": DiscoverySource("hard_demons", {"type": 11, "diff": -2, "demonFilter": 3}),
     "insane_demons": DiscoverySource("insane_demons", {"type": 11, "diff": -2, "demonFilter": 4}),
     "extreme_demons": DiscoverySource("extreme_demons", {"type": 11, "diff": -2, "demonFilter": 5}),
+    "layout": DiscoverySource("layout", {"type": 0, "str": "layout"}, ("layout",)),
 }
 
 

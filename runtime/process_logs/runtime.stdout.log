@@ -1,2 +1,5 @@
-INFO:     127.0.0.1:50868 - "POST /generate HTTP/1.1" 200 OK
-INFO:     127.0.0.1:61817 - "GET /export/7aaa127b4e1c487388b0d0b9de9f2bd3?format=json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57663 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60467 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60467 - "GET /web/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55478 - "GET /web/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60467 - "GET /favicon.ico HTTP/1.1" 404 Not Found

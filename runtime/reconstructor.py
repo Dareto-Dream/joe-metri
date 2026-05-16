@@ -97,7 +97,7 @@ def reconstruct_layout(tokens: list[str]) -> RuntimeLayout:
                 x_step=item.x_step,
                 y_lane=item.y_lane,
                 x=X_ORIGIN + item.x_step * STEP_UNITS,
-                y=Y_ORIGIN + item.y_lane * Y_UNITS,
+                y=runtime_y(item.token, item.y_lane),
                 width=item.width,
                 sequence=item.sequence,
             )
@@ -137,8 +137,6 @@ def polish_runtime_objects(objects: list[RuntimeObject]) -> list[RuntimeObject]:
             continue
 
         if candidate.token in SOLID_TOKENS:
-            if candidate.y_lane == 0:
-                continue
             if solid_columns.get(candidate.x_step, 0) >= 1:
                 continue
             free_offsets = [
@@ -159,9 +157,13 @@ def polish_runtime_objects(objects: list[RuntimeObject]) -> list[RuntimeObject]:
             continue
         if candidate.token in CONTROL_TOKENS and not control_is_allowed(candidate, last_control_step):
             continue
+        if candidate.token not in CONTROL_TOKENS and (candidate.x_step, candidate.y_lane) in occupied_cells:
+            continue
         key = (candidate.token, candidate.x_step, candidate.y_lane)
         if key in seen_interactives:
             continue
+        if candidate.token not in CONTROL_TOKENS:
+            occupied_cells.add((candidate.x_step, candidate.y_lane))
         seen_interactives.add(key)
         step_counts[candidate.x_step] = step_counts.get(candidate.x_step, 0) + 1
         polished.append(candidate)
@@ -173,13 +175,17 @@ def normalize_runtime_object(item: RuntimeObject) -> RuntimeObject | None:
     if item.token in SOLID_TOKENS:
         if item.y_lane > MAX_SOLID_LANE:
             return None
-        return replace(item, width=max(1, min(item.width, GROUND_SEGMENT_WIDTH)))
+        return replace(
+            item,
+            y=runtime_y(item.token, item.y_lane),
+            width=max(1, min(item.width, GROUND_SEGMENT_WIDTH)),
+        )
     if item.token in ORB_TOKENS | PAD_TOKENS | HAZARD_TOKENS:
         y_lane = max(1, min(item.y_lane, MAX_INTERACTIVE_LANE))
-        return replace(item, y_lane=y_lane, y=Y_ORIGIN + y_lane * Y_UNITS)
+        return replace(item, y_lane=y_lane, y=runtime_y(item.token, y_lane))
     if item.token in CONTROL_TOKENS:
         y_lane = max(2, min(item.y_lane, MAX_INTERACTIVE_LANE))
-        return replace(item, y_lane=y_lane, y=Y_ORIGIN + y_lane * Y_UNITS)
+        return replace(item, y_lane=y_lane, y=runtime_y(item.token, y_lane))
     return item
 
 
@@ -215,3 +221,7 @@ def ordered_unique(values: list[str]) -> list[str]:
 
 def gd_object_string(object_id: int, x: int, y: int) -> str:
     return f"1,{object_id},2,{x},3,{y}"
+
+
+def runtime_y(token: str, y_lane: int) -> int:
+    return Y_ORIGIN + y_lane * Y_UNITS

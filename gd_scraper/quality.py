@@ -77,7 +77,7 @@ def evaluate_token_sequence_quality(tokens: list[str]) -> TokenQualityReport:
                 control_spam += 1
             last_control_step[category] = item.x_step
 
-        if item.token in SOLID_TOKENS and item.y_lane in {current_path_lane, current_path_lane + 1}:
+        if item.token == "BLOCK" and item.y_lane > 0 and item.y_lane in {current_path_lane, current_path_lane + 1}:
             path_obstructions += 1
         current_path_lane = next_path_lane(current_path_lane, item)
 
@@ -172,11 +172,11 @@ def next_path_lane(current_lane: int, item: object) -> int:
             return max(1, y_lane + 1)
         return current_lane
     if token in ORB_TOKENS:
-        return max(1, min(15, y_lane))
+        return max(max(1, current_lane - 2), min(min(15, current_lane + 2), y_lane))
     if token in {"PAD_YELLOW", "PAD_BLUE"}:
         return max(1, min(15, y_lane + 1))
     if token in GRAVITY_TOKENS:
-        return max(1, min(15, y_lane))
+        return current_lane
     if token in PORTAL_TOKENS:
-        return max(1, min(15, y_lane))
+        return current_lane
     return current_lane

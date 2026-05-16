@@ -11,6 +11,7 @@ from gd_scraper.tokenizer import (
     parse_level_objects,
     tokenized_record_from_level,
 )
+from runtime.reconstructor import reconstruct_layout
 
 
 def encoded_level(raw: str) -> str:
@@ -66,6 +67,40 @@ class TokenizerTests(unittest.TestCase):
         self.assertEqual(artifacts.token_record["level_id"], 123)
         self.assertEqual(artifacts.token_record["song_type"], "custom")
         self.assertTrue(artifacts.token_record["audio"]["conditioning_ready"])
+
+    def test_tokenized_floor_blocks_roundtrip_to_runtime_export_coordinates(self) -> None:
+        raw_level = (
+            "kS1,0;"
+            "1,1,2,15,3,15;"
+            "1,1,2,45,3,15;"
+            "1,1,2,75,3,15;"
+            "1,8,2,105,3,45;"
+            "1,36,2,105,3,105;"
+            "1,13,2,135,3,75"
+        )
+        level = {
+            "level_id": 125,
+            "difficulty": "HARD",
+            "song_id": 999,
+            "source": "featured",
+            "level_data": encoded_level(raw_level),
+        }
+        artifacts = tokenized_record_from_level(
+            level,
+            TokenizerConfig(min_gameplay_objects=1, min_tokens=1, max_unknown_ratio=1.0),
+        )
+
+        self.assertIsNotNone(artifacts.token_record)
+        assert artifacts.token_record is not None
+        layout = reconstruct_layout([str(token) for token in artifacts.token_record["tokens"]])
+
+        self.assertEqual(layout.errors, [])
+        self.assertIn("1,1,2,15,3,15", layout.gd_object_strings)
+        self.assertIn("1,1,2,45,3,15", layout.gd_object_strings)
+        self.assertIn("1,1,2,75,3,15", layout.gd_object_strings)
+        self.assertIn("1,8,2,105,3,45", layout.gd_object_strings)
+        self.assertIn("1,36,2,105,3,105", layout.gd_object_strings)
+        self.assertIn("1,13,2,135,3,75", layout.gd_object_strings)
 
     def test_rejects_all_objects_in_one_timestep(self) -> None:
         raw_level = "kS1,0;1,8,2,15,3,45;1,36,2,15,3,75;1,13,2,15,3,105"

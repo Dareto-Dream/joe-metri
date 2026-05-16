@@ -48,7 +48,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def default_source_names() -> list[str]:
-    return list(DEFAULT_SOURCES)
+    return [name for name, source in DEFAULT_SOURCES.items() if not source.name_contains]
 
 
 @dataclass

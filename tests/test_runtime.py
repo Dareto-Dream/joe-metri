@@ -16,6 +16,7 @@ from runtime.exporter import GmdMetadata, is_valid_gd_object_string, validate_la
 from runtime.flow import arrange_flow_synced_tokens, score_flow_sync
 from runtime.generator import MechanicsRuntime
 from gd_scraper.quality import evaluate_token_sequence_quality
+from runtime.reference_layout import build_reference_layout
 from runtime.reconstructor import reconstruct_layout
 from runtime.save_codec import (
     CODEC_BASE64_GZIP,
@@ -70,11 +71,11 @@ class RuntimeTests(unittest.TestCase):
                 "DIFF_HARD",
                 "ALIGN_UNKNOWN",
                 "BLOCK",
-                "Y1",
+                "Y0",
                 "WIDTH_2",
                 "STEP",
                 "SPIKE",
-                "Y2",
+                "Y1",
                 "STEP",
                 "END",
             ]
@@ -82,10 +83,11 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(layout.errors, [])
         self.assertEqual(len(layout.objects), 2)
-        self.assertIn("1,1,2,15,3,30", layout.gd_object_strings)
-        self.assertIn("1,1,2,45,3,30", layout.gd_object_strings)
+        self.assertIn("1,1,2,15,3,15", layout.gd_object_strings)
+        self.assertIn("1,1,2,45,3,15", layout.gd_object_strings)
+        self.assertIn("1,8,2,45,3,45", layout.gd_object_strings)
         self.assertTrue(layout.level_string.startswith("kS38,"))
-        self.assertIn(";1,1,2,15,3,30;", layout.level_string)
+        self.assertIn(";1,1,2,15,3,15;", layout.level_string)
         self.assertTrue(is_valid_gd_object_string(layout.gd_object_strings[0]))
 
     def test_runtime_generates_valid_layout_from_wav(self) -> None:
@@ -131,6 +133,30 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(any(event.get("type") == "token" for event in events))
         self.assertTrue(any(event.get("type") == "selected" for event in events))
 
+    def test_reference_layout_preserves_example_object_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            example = root / "reference.gmd"
+            objects = []
+            for index in range(30):
+                object_id = 467 if index % 3 else 8
+                objects.append(f"1,{object_id},2,{index * 30},3,{30 + (index % 4) * 30},21,1004")
+            example.write_text("kS1,0;" + ";".join(objects), encoding="utf-8")
+
+            audio_path = root / "pulse.wav"
+            write_pulse_wav(audio_path)
+            conditioning = build_conditioning(
+                analyze_audio(audio_path),
+                GenerationControls(difficulty="Hard", alignments=("Flow",), max_tokens=120),
+            )
+            layout = build_reference_layout(conditioning, seed=1, examples_dir=root)
+
+        self.assertIsNotNone(layout)
+        assert layout is not None
+        self.assertGreaterEqual(len(layout.gd_object_strings), 24)
+        self.assertTrue(any(value.startswith("1,467,") for value in layout.gd_object_strings))
+        self.assertTrue(any(item.object_id == 467 for item in layout.objects))
+
     def test_flow_arranger_turns_collapsed_sample_into_synced_playable_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "pulse.wav"
@@ -173,6 +199,63 @@ class RuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(report.sync_score, 70)
         self.assertGreaterEqual(report.flow_score, 80)
         self.assertEqual(report.sync_score, rescored.sync_score)
+
+    def test_flow_arranger_adds_support_terrain_without_hurting_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pulse.wav"
+            write_pulse_wav(path)
+            analysis = analyze_audio(path)
+        conditioning = build_conditioning(
+            analysis,
+            GenerationControls(
+                difficulty="Hard",
+                alignments=("Flow", "Sync-heavy"),
+                max_tokens=160,
+                seed=23,
+            ),
+        )
+
+        arranged, report = arrange_flow_synced_tokens(
+            ["START", "DIFF_HARD", "ALIGN_UNKNOWN", "SPIKE", "Y1", "STEP", "END"],
+            conditioning,
+            seed=23,
+        )
+        layout = reconstruct_layout(arranged)
+        quality = evaluate_token_sequence_quality(arranged)
+
+        ground = [item for item in layout.objects if item.token == "BLOCK" and item.y_lane == 0]
+        self.assertGreaterEqual(len(ground), 2)
+        self.assertGreater(len(layout.gd_object_strings), len(layout.objects))
+        self.assertEqual(quality.path_obstructions, 0)
+        self.assertGreaterEqual(report.sync_score, 70)
+
+    def test_quality_treats_floor_blocks_as_support(self) -> None:
+        floor_supported = [
+            "START",
+            "DIFF_HARD",
+            "ALIGN_UNKNOWN",
+            "BLOCK",
+            "Y0",
+            "WIDTH_8",
+            "STEP",
+            "SPIKE",
+            "Y1",
+            "STEP",
+            "END",
+        ]
+        blocked_path = [
+            "START",
+            "DIFF_HARD",
+            "ALIGN_UNKNOWN",
+            "BLOCK",
+            "Y1",
+            "WIDTH_1",
+            "STEP",
+            "END",
+        ]
+
+        self.assertEqual(evaluate_token_sequence_quality(floor_supported).path_obstructions, 0)
+        self.assertGreater(evaluate_token_sequence_quality(blocked_path).path_obstructions, 0)
 
     def test_quality_penalizes_player_path_obstructions(self) -> None:
         open_path = [

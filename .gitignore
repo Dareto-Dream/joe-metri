@@ -16,6 +16,9 @@ data/checkpoints/*.txt
 data/logs/*.log
 data/logs/*.jsonl
 data/runtime/
+data_layout/
 exports/
 models/*/*.json
 models/*/*.jsonl
+models/mechanics_layout_v1/
+models/mechanics_v1_pre_layout_*/

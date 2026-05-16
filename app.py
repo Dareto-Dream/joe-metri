@@ -47,13 +47,35 @@ DATA_DIR = ROOT / "data" / "runtime"
 UPLOAD_DIR = DATA_DIR / "uploads"
 SAVE_UPLOAD_DIR = DATA_DIR / "saves"
 EXPORT_DIR = ROOT / "exports"
+DEFAULT_MODEL_DIR = ROOT / "models" / "mechanics_v1"
 
 app = FastAPI(title="Geometry Dash AI Runtime v1")
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
 
-runtime = MechanicsRuntime(ROOT / "models" / "mechanics_v1")
+_runtime: MechanicsRuntime | None = None
 uploaded_audio: dict[str, Path] = {}
 generations: dict[str, GenerationResult] = {}
+
+
+def resolve_runtime_model_dir(model_dir: Path | str | None = None) -> Path:
+    raw = model_dir or os.environ.get("GD_AI_MODEL_DIR") or DEFAULT_MODEL_DIR
+    path = Path(raw)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
+
+
+def configure_runtime(model_dir: Path | str | None = None) -> MechanicsRuntime:
+    global _runtime
+    _runtime = MechanicsRuntime(resolve_runtime_model_dir(model_dir))
+    return _runtime
+
+
+def get_runtime() -> MechanicsRuntime:
+    global _runtime
+    if _runtime is None:
+        _runtime = MechanicsRuntime(resolve_runtime_model_dir())
+    return _runtime
 
 
 @app.get("/")
@@ -63,9 +85,11 @@ def index() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict[str, object]:
+    active_runtime = get_runtime()
     return {
         "status": "ok",
-        "model_path": str(runtime.model_path),
+        "model_dir": str(active_runtime.model_dir),
+        "model_path": str(active_runtime.model_path),
         "supported_audio": sorted(SUPPORTED_AUDIO_EXTENSIONS),
         "generations": len(generations),
     }
@@ -104,7 +128,7 @@ async def generate_level(
         raise HTTPException(status_code=400, detail="audio_required")
 
     controls = _generation_controls(difficulty, alignments, temperature, top_k, max_tokens, seed, planning_iterations)
-    result = runtime.generate_from_audio(path, filename=filename, controls=controls)
+    result = get_runtime().generate_from_audio(path, filename=filename, controls=controls)
     generations[result.generation_id] = result
     return JSONResponse(result.to_json())
 
@@ -142,7 +166,12 @@ async def generate_level_stream(
 
         def run_generation() -> None:
             try:
-                result = runtime.generate_from_audio(path, filename=filename, controls=controls, event_callback=emit)
+                result = get_runtime().generate_from_audio(
+                    path,
+                    filename=filename,
+                    controls=controls,
+                    event_callback=emit,
+                )
                 generations[result.generation_id] = result
                 events.put({"type": "done", "generation": result.to_json()})
             except Exception as exc:  # noqa: BLE001
@@ -314,9 +343,9 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tokens-file",
         type=Path,
-        default=ROOT / "models" / "mechanics_v1" / "sample_generation_live.json",
-        help="Token JSON file used when --audio is not provided.",
+        help="Token JSON file used when --audio is not provided. Defaults to the selected model directory sample.",
     )
+    parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
     parser.add_argument("--save-path", type=Path)
     parser.add_argument("--export-dir", type=Path, default=EXPORT_DIR)
     parser.add_argument("--target-level-key", default="")
@@ -340,6 +369,7 @@ def build_cli_parser() -> argparse.ArgumentParser:
 
 
 def run_cli(args: argparse.Namespace) -> int:
+    active_runtime = configure_runtime(args.model_dir)
     if args.inject_save and args.inject_local_level:
         raise ValueError("--inject-save and --inject-local-level are mutually exclusive")
     if args.official_song_id and args.custom_song_id:
@@ -365,12 +395,12 @@ def run_cli(args: argparse.Namespace) -> int:
             seed=int(args.seed),
             planning_iterations=max(1, min(16, int(args.planning_iterations))),
         )
-        result = runtime.generate_from_audio(args.audio, filename=args.audio.name, controls=controls)
+        result = active_runtime.generate_from_audio(args.audio, filename=args.audio.name, controls=controls)
         metrics = write_generation_exports(result, export_dir, metadata=metadata)
         level_string = result.layout.level_string
         token_count = len(result.tokens)
     else:
-        tokens = load_cli_tokens(args.tokens_file)
+        tokens = load_cli_tokens(args.tokens_file, model_dir=active_runtime.model_dir)
         controls = GenerationControls(
             difficulty=args.difficulty,
             alignments=_parse_alignments(args.alignments),
@@ -381,12 +411,12 @@ def run_cli(args: argparse.Namespace) -> int:
             planning_iterations=max(1, min(16, int(args.planning_iterations))),
         )
         if tokens is None:
-            tokens = generate_cli_tokens(controls)
-            print(f"sample token file not found; generated tokens from {runtime.model_path}")
+            tokens = generate_cli_tokens(active_runtime, controls)
+            print(f"sample token file not found; generated tokens from {active_runtime.model_path}")
         else:
             conditioning = build_conditioning(default_cli_audio_analysis(), controls)
             tokens, _flow_sync = arrange_flow_synced_tokens(tokens, conditioning, seed=controls.seed)
-        validation = validate_generation(tokens, known_tokens=runtime.known_tokens)
+        validation = validate_generation(tokens, known_tokens=active_runtime.known_tokens)
         layout = reconstruct_layout(tokens)
         metrics = write_layout_exports(tokens, validation, layout, export_dir, metadata=metadata)
         level_string = layout.level_string
@@ -439,10 +469,12 @@ def run_cli(args: argparse.Namespace) -> int:
     return 0
 
 
-def load_cli_tokens(path: Path) -> list[str] | None:
-    default_live = ROOT / "models" / "mechanics_v1" / "sample_generation_live.json"
-    default_static = ROOT / "models" / "mechanics_v1" / "sample_generation.json"
-    if not path.exists() and path.name == "sample_generation_live.json":
+def load_cli_tokens(path: Path | None, *, model_dir: Path) -> list[str] | None:
+    default_live = model_dir / "sample_generation_live.json"
+    default_static = model_dir / "sample_generation.json"
+    if path is None:
+        path = default_live
+    if not path.exists() and path == default_live:
         path = default_static
     if not path.exists():
         if path in (default_live, default_static):
@@ -455,12 +487,12 @@ def load_cli_tokens(path: Path) -> list[str] | None:
     return [str(token) for token in tokens]
 
 
-def generate_cli_tokens(controls: GenerationControls) -> list[str]:
+def generate_cli_tokens(active_runtime: MechanicsRuntime, controls: GenerationControls) -> list[str]:
     conditioning = build_conditioning(default_cli_audio_analysis(), controls)
     plan = plan_tokens(
-        runtime.model,
-        token_to_id=runtime.token_to_id,
-        id_to_token=runtime.id_to_token,
+        active_runtime.model,
+        token_to_id=active_runtime.token_to_id,
+        id_to_token=active_runtime.id_to_token,
         conditioning=conditioning,
         seed=controls.seed,
         temperature=controls.temperature,
@@ -520,9 +552,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.export_gmd or args.export_object_string or args.inject_save or args.inject_local_level:
         return run_cli(args)
 
+    configure_runtime(args.model_dir)
+
     import uvicorn
 
-    uvicorn.run("app:app", host=args.host, port=args.port, reload=False)
+    uvicorn.run(app, host=args.host, port=args.port, reload=False)
     return 0
 
 

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from gd_scraper.errors import ShutdownRequested
-from gd_scraper.scraper import GeometryDashScraper
+from gd_scraper.scraper import GeometryDashScraper, source_name_matches
 from gd_scraper.sources import DiscoverySource
 
 
@@ -84,6 +84,13 @@ class HangingDownloadClient:
 
 
 class ScraperShutdownTests(unittest.IsolatedAsyncioTestCase):
+    def test_source_name_filter_matches_layout_levels_only(self) -> None:
+        source = DiscoverySource("layout", {"type": 0, "str": "layout"}, ("layout",))
+
+        self.assertTrue(source_name_matches("Clean Layout Preview", source))
+        self.assertTrue(source_name_matches("LAYOUT challenge", source))
+        self.assertFalse(source_name_matches("Nine Circles Remake", source))
+
     async def test_shutdown_finishes_active_download_and_skips_new_comment_requests(self) -> None:
         client = BlockingClient()
         with tempfile.TemporaryDirectory() as tmp_dir:

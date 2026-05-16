@@ -79,6 +79,14 @@ Restricted sources:
 python -m gd_scraper --sources featured,rated,extreme_demons
 ```
 
+Layout-only corpus for a fresh model:
+
+```powershell
+python -m gd_scraper --data-dir data_layout --sources layout --target-count 0 --pages-per-source 5000
+python -m gd_scraper.tokenizer --data-dir data_layout --limit 0 --overwrite --inspect 10
+python -m gd_scraper.train_mechanics --data-dir data_layout --model-dir models/mechanics_layout_v1 --max-records 0 --epochs 8
+```
+
 Optional raw comment pages for saved levels:
 
 ```powershell
@@ -143,6 +151,12 @@ Start the interactive generator:
 
 ```powershell
 .\.venv\Scripts\python.exe app.py
+```
+
+Run the interactive generator with the layout-only model:
+
+```powershell
+.\.venv\Scripts\python.exe app.py --model-dir models/mechanics_layout_v1
 ```
 
 Open `http://127.0.0.1:8000/`, upload MP3/WAV/OGG audio, generate gameplay, preview the 2D layout, and export JSON/object strings/level strings/k4/GMD data.
@@ -289,6 +303,7 @@ medium_demons
 hard_demons
 insane_demons
 extreme_demons
+layout
 ```
 
 ## Design Notes

@@ -38,6 +38,14 @@ from .sources import DiscoverySource
 LOGGER = logging.getLogger(__name__)
 
 
+def source_name_matches(level_name: str, source: DiscoverySource) -> bool:
+    required = source.name_contains
+    if not required:
+        return True
+    normalized = level_name.casefold()
+    return all(term.casefold() in normalized for term in required)
+
+
 class GeometryDashScraper:
     def __init__(
         self,
@@ -299,6 +307,9 @@ class GeometryDashScraper:
                     raw_search=raw_level.get("_raw", ""),
                 )
                 if candidate is None:
+                    self.stats.skipped += 1
+                    continue
+                if not source_name_matches(candidate.name, source):
                     self.stats.skipped += 1
                     continue
 

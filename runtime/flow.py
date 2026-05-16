@@ -18,6 +18,10 @@ SPEED_TOKENS = {"SPEED_SLOW", "SPEED_NORMAL", "SPEED_FAST"}
 CONTROL_TOKENS = PORTAL_TOKENS | GRAVITY_TOKENS | SPEED_TOKENS
 FLOW_ORBS = ("ORB_YELLOW", "ORB_BLUE", "ORB_PINK", "ORB_BLACK")
 FLOW_PORTALS = ("PORTAL_CUBE", "PORTAL_SHIP", "PORTAL_BALL", "PORTAL_UFO", "PORTAL_WAVE")
+GROUND_WIDTH = 4
+GROUND_LANE = 0
+MAX_TERRAIN_TOKEN_SHARE = 0.34
+MAX_EVENTS_PER_STEP = 2
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,9 @@ def arrange_flow_synced_tokens(
     tokens = _normalized_prefix(conditioning)
     state = _FlowState()
     events_by_step = _build_events(event_steps, conditioning, style, state, rng)
+    _add_playable_motifs(events_by_step, event_steps, steps, conditioning, rng)
+    _add_raised_scaffolds(events_by_step, steps, conditioning, rng)
+    _add_support_terrain(events_by_step, steps, conditioning)
 
     for step in range(steps):
         for event in events_by_step.get(step, []):
@@ -129,7 +136,8 @@ def score_flow_sync(
     synced = 0
     lanes: list[tuple[int, int]] = []
     current_lane = 1
-    for item in sorted(objects, key=lambda value: (value.x_step, value.sequence)):
+    sync_objects = [item for item in objects if not _is_support_terrain(item.token, item.y_lane)]
+    for item in sorted(sync_objects, key=lambda value: (value.x_step, value.sequence)):
         beat_distance = _nearest_distance(item.x_step, beat_steps)
         onset_distance = _nearest_distance(item.x_step, onset_steps)
         if beat_distance == 0:
@@ -148,7 +156,8 @@ def score_flow_sync(
         max_lane_jump = max(max_lane_jump, abs(right_lane - left_lane))
 
     object_count = len(objects)
-    sync_score = 100.0 * synced / max(object_count, 1)
+    scored_object_count = len(sync_objects)
+    sync_score = 100.0 * synced / max(scored_object_count, 1)
     flow_score = 100.0
     flow_score -= max(0, max_lane_jump - 2) * 10.0
     flow_score -= quality.path_obstructions * 18.0
@@ -164,7 +173,7 @@ def score_flow_sync(
         sync_score=sync_score,
         flow_score=flow_score,
         synced_objects=synced,
-        unsynced_objects=object_count - synced,
+        unsynced_objects=max(0, scored_object_count - synced),
         beat_aligned_objects=beat_aligned,
         onset_aligned_objects=onset_aligned,
         max_lane_jump=max_lane_jump,
@@ -197,7 +206,7 @@ def _target_object_count(conditioning: ConditioningProfile, steps: int) -> int:
             alignment_rate += 0.04
         elif normalized == "flow":
             alignment_rate -= 0.02
-    rate = max(0.22, min(0.56, 0.23 + conditioning.density * 0.15 + alignment_rate))
+    rate = max(0.30, min(0.68, 0.30 + conditioning.density * 0.18 + alignment_rate))
     desired = max(6, int(round(steps * rate)))
     return max(1, min(desired, budget))
 
@@ -329,12 +338,11 @@ def _choose_token(
 
     if (
         index > 0
-        and energy > 0.42
-        and step - state.last_portal_step >= 48
-        and (index % 13 == 0 or "wave-heavy" in normalized)
+        and step - state.last_portal_step >= 28
+        and (index % 13 == 0 or "wave-heavy" in normalized or ("ship-focused" in normalized and index % 9 == 0))
     ):
         return _weighted_choice(FLOW_PORTALS, style, rng)
-    if index > 0 and energy > 0.42 and step - state.last_speed_step >= 48 and index % 17 == 0:
+    if index > 0 and step - state.last_speed_step >= 34 and index % 17 == 0:
         return "SPEED_FAST" if energy > 0.58 else "SPEED_NORMAL"
     if "technical" in normalized and step - state.last_gravity_step >= 44 and onset > 0.0 and index % 8 == 0:
         return rng.choice(("GRAVITY_UP", "GRAVITY_DOWN"))
@@ -343,11 +351,11 @@ def _choose_token(
     if onset >= 1.0:
         choices.update({"ORB_YELLOW": 5, "ORB_BLUE": 4, "SPIKE": 4, "PAD_YELLOW": 2})
         if energy > 0.7:
-            choices.update({"ORB_PINK": 2, "SAW": 1})
+            choices.update({"ORB_PINK": 2, "SAW": 2})
     elif beat >= 1.0:
         choices.update({"SPIKE": 5, "ORB_YELLOW": 3, "PAD_YELLOW": 2, "ORB_BLUE": 2})
     elif energy > 0.62:
-        choices.update({"ORB_BLUE": 4, "SPIKE": 3, "ORB_YELLOW": 3, "PAD_BLUE": 1})
+        choices.update({"ORB_BLUE": 4, "SPIKE": 3, "ORB_YELLOW": 3, "PAD_BLUE": 1, "SAW": 1})
     else:
         choices.update({"SPIKE": 3, "ORB_YELLOW": 2, "PAD_YELLOW": 1})
 
@@ -406,17 +414,21 @@ def _append_event(tokens: list[str], event: tuple[str, int, int]) -> None:
 
 def _next_path_lane(current_lane: int, token: str, y_lane: int) -> int:
     if token in SOLID_TOKENS:
+        if y_lane <= 0:
+            return current_lane
         if y_lane <= current_lane and y_lane + 1 >= current_lane:
             return max(current_lane, y_lane + 1)
         if y_lane < current_lane:
             return max(1, y_lane + 1)
         return current_lane
     if token in ORB_TOKENS:
-        return _clamp_lane(y_lane, 1, 15)
+        return _clamp_lane(y_lane, max(1, current_lane - 2), min(15, current_lane + 2))
     if token in PAD_TOKENS:
         return _clamp_lane(y_lane + 1, 1, 15)
     if token in CONTROL_TOKENS:
-        return _clamp_lane(y_lane, 1, 15)
+        return current_lane
+    if token in HAZARD_TOKENS:
+        return _clamp_lane(current_lane - 2, 1, 15)
     return current_lane
 
 
@@ -469,3 +481,150 @@ def _weighted_choice(tokens: tuple[str, ...], weights: Counter[str], rng: random
 
 def _clamp_lane(value: int, lower: int, upper: int) -> int:
     return max(lower, min(upper, int(value)))
+
+
+def _add_support_terrain(
+    events_by_step: dict[int, list[tuple[str, int, int]]],
+    steps: int,
+    conditioning: ConditioningProfile,
+) -> None:
+    terrain_token_budget = max(0, int(conditioning.target_tokens * MAX_TERRAIN_TOKEN_SHARE))
+    max_segments = max(1, terrain_token_budget // 3)
+    starts = list(range(0, steps, GROUND_WIDTH))[:max_segments]
+    for start in starts:
+        if _is_floor_gap(start, steps):
+            _put_event(events_by_step, start - 2, "PAD_YELLOW", 1, steps=steps)
+            _put_event(events_by_step, start + 2, "ORB_YELLOW", 3, steps=steps)
+            continue
+        width = max(1, min(GROUND_WIDTH, steps - start))
+        events = events_by_step.setdefault(start, [])
+        if len(events) < MAX_EVENTS_PER_STEP:
+            events.insert(0, ("BLOCK", GROUND_LANE, width))
+
+
+def _is_support_terrain(token: str, y_lane: int) -> bool:
+    return token in SOLID_TOKENS and y_lane <= GROUND_LANE
+
+
+def _add_playable_motifs(
+    events_by_step: dict[int, list[tuple[str, int, int]]],
+    event_steps: list[int],
+    steps: int,
+    conditioning: ConditioningProfile,
+    rng: random.Random,
+) -> None:
+    if not event_steps:
+        return
+
+    for index, step in enumerate(event_steps):
+        if step < 4 or step >= steps - 4:
+            continue
+
+        phase = index % 12
+        if phase in {1, 7}:
+            _replace_first_interactive(events_by_step, step, "SPIKE", 1)
+            _put_event(events_by_step, step + 2, "SPIKE", 1, steps=steps)
+        elif phase in {2, 8}:
+            _replace_first_interactive(events_by_step, step, "PAD_YELLOW", 1)
+            _put_event(events_by_step, step + 2, "ORB_YELLOW", 3, steps=steps)
+            _put_event(events_by_step, step + 4, "SPIKE", 1, steps=steps)
+        elif phase == 4:
+            platform_lane = 2 + (index // 12) % 3
+            _put_event(events_by_step, step + 1, "PLATFORM", platform_lane, width=3, steps=steps)
+            _put_event(events_by_step, step + 3, rng.choice(FLOW_ORBS), platform_lane + 2, steps=steps)
+        elif phase == 6:
+            _replace_first_interactive(events_by_step, step, "PAD_BLUE", 1)
+            _put_event(events_by_step, step + 2, "ORB_BLUE", 4, steps=steps)
+        elif phase == 10:
+            _replace_first_interactive(events_by_step, step, rng.choice(("GRAVITY_UP", "GRAVITY_DOWN")), 5)
+            _put_event(events_by_step, step + 2, rng.choice(FLOW_PORTALS), 5, steps=steps)
+
+    if "ship-focused" in {item.lower() for item in conditioning.alignments}:
+        for step in event_steps[::10]:
+            _put_event(events_by_step, step, "PORTAL_SHIP", 5, steps=steps)
+
+
+def _add_raised_scaffolds(
+    events_by_step: dict[int, list[tuple[str, int, int]]],
+    steps: int,
+    conditioning: ConditioningProfile,
+    rng: random.Random,
+) -> None:
+    normalized = {item.lower() for item in conditioning.alignments}
+    spacing = 10 if "dense" in normalized else 12
+    for index, start in enumerate(range(10, max(10, steps - 8), spacing)):
+        lane = 2 + index % 4
+        width = 2 + (index % 2)
+        _put_event(events_by_step, start + 1, "PLATFORM", lane, width=width, steps=steps)
+
+        if index % 3 == 0:
+            _put_event(events_by_step, start + 4, rng.choice(FLOW_ORBS), min(7, lane + 2), steps=steps)
+        elif index % 3 == 1:
+            _put_event(events_by_step, start + 4, "SPIKE", 1, steps=steps)
+        else:
+            _put_event(events_by_step, start + 4, "PAD_YELLOW", 1, steps=steps)
+
+
+def _put_event(
+    events_by_step: dict[int, list[tuple[str, int, int]]],
+    step: int,
+    token: str,
+    lane: int,
+    *,
+    steps: int,
+    width: int = 1,
+) -> bool:
+    if step < 1 or step >= steps - 1:
+        return False
+
+    events = events_by_step.setdefault(step, [])
+    if any(existing_token == token and existing_lane == lane for existing_token, existing_lane, _width in events):
+        return False
+    if any(existing_lane == lane for _existing_token, existing_lane, _width in events):
+        return False
+    if token in SOLID_TOKENS and any(existing_token in SOLID_TOKENS for existing_token, _lane, _width in events):
+        return False
+    if len(events) >= MAX_EVENTS_PER_STEP:
+        return False
+
+    events.append((token, lane, width))
+    return True
+
+
+def _replace_first_interactive(
+    events_by_step: dict[int, list[tuple[str, int, int]]],
+    step: int,
+    token: str,
+    lane: int,
+) -> None:
+    events = events_by_step.get(step)
+    if not events:
+        events_by_step[step] = [(token, lane, 1)]
+        return
+
+    for index, (existing_token, _existing_lane, _width) in enumerate(events):
+        if existing_token not in SOLID_TOKENS:
+            events[index] = (token, lane, 1)
+            events[:] = _dedupe_event_lanes(events)
+            return
+    if len(events) < MAX_EVENTS_PER_STEP:
+        events.append((token, lane, 1))
+        events[:] = _dedupe_event_lanes(events)
+
+
+def _is_floor_gap(start: int, steps: int) -> bool:
+    segment = start // GROUND_WIDTH
+    if start < 16 or start > steps - 16:
+        return False
+    return segment % 11 == 6 or segment % 17 == 10
+
+
+def _dedupe_event_lanes(events: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
+    result: list[tuple[str, int, int]] = []
+    occupied_lanes: set[int] = set()
+    for token, lane, width in events:
+        if lane in occupied_lanes:
+            continue
+        occupied_lanes.add(lane)
+        result.append((token, lane, width))
+    return result[:MAX_EVENTS_PER_STEP]

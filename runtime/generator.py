@@ -14,6 +14,7 @@ from gd_scraper.train_mechanics import TinyNgramModel, model_from_json
 from .audio import AudioAnalysis, analyze_audio
 from .conditioning import ConditioningProfile, GenerationControls, build_conditioning
 from .planner import GenerationPlan, PlanningEventCallback, plan_tokens
+from .reference_layout import build_reference_layout
 from .reconstructor import RuntimeLayout, reconstruct_layout
 from .validator import ValidationResult, validate_generation
 
@@ -132,7 +133,7 @@ class MechanicsRuntime:
         )
         tokens = plan.best.tokens
         validation = validate_generation(tokens, known_tokens=self.known_tokens)
-        layout = reconstruct_layout(tokens)
+        layout = build_reference_layout(conditioning, seed=active_controls.seed) or reconstruct_layout(tokens)
         elapsed = max(time.perf_counter() - started, 1e-9)
         metrics = build_metrics(tokens, validation, layout, elapsed, plan=plan)
         return GenerationResult(
